@@ -18,6 +18,11 @@ export const keys = {
   myAssignments: ['assignments', 'mine'],
   assignments: ['admin', 'assignments'],
   assignmentReport: (id) => ['admin', 'assignments', id],
+  activePromotion: (who) => ['promotion', 'active', who],
+  promotions: ['admin', 'promotions'],
+  paymentConfig: ['payments', 'config'],
+  payment: (id) => ['payments', id],
+  adminPayments: (status) => ['admin', 'payments', status],
 };
 
 function toQuery(params) {
@@ -122,3 +127,34 @@ export const useAssignments = () =>
 
 export const useAssignmentReport = (id) =>
   useQuery({ queryKey: keys.assignmentReport(id), queryFn: () => api(`/assignments/${id}/report`), enabled: Boolean(id) });
+
+// The "support us" popup to show right now, if any (guests and readers can get different ones).
+export const useActivePromotion = (who) =>
+  useQuery({
+    queryKey: keys.activePromotion(who),
+    queryFn: () => api('/promotions/active').then((r) => r.promotion),
+    staleTime: 5 * 60 * 1000,
+    refetchInterval: 5 * 60 * 1000,
+    retry: false,
+  });
+
+export const usePromotions = () => useQuery({ queryKey: keys.promotions, queryFn: () => api('/promotions') });
+
+export const usePaymentConfig = () =>
+  useQuery({ queryKey: keys.paymentConfig, queryFn: () => api('/payments/config'), staleTime: 10 * 60 * 1000 });
+
+// Polls every 3 s while the payer answers the prompt on their phone.
+export const usePayment = (id) =>
+  useQuery({
+    queryKey: keys.payment(id),
+    queryFn: () => api(`/payments/${id}`).then((r) => r.payment),
+    enabled: Boolean(id),
+    refetchInterval: (query) => (query.state.data?.status === 'pending' || !query.state.data ? 3000 : false),
+  });
+
+export const useAdminPayments = (status) =>
+  useQuery({
+    queryKey: keys.adminPayments(status),
+    queryFn: () => api(`/payments${toQuery({ status })}`),
+    placeholderData: (previous) => previous,
+  });

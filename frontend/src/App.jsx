@@ -9,6 +9,7 @@ import { LoginPage, RegisterPage, VerifyEmailPage } from './pages/AuthPages.jsx'
 import NotFoundPage from './pages/NotFoundPage.jsx';
 import { PageLoader } from './components/Feedback.jsx';
 import RequiredPage from './pages/RequiredPage.jsx';
+import SupportPage from './pages/SupportPage.jsx';
 import UploadPage from './pages/UploadPage.jsx';
 
 // The reader pulls in pdf.js and epub.js, so it loads on demand.
@@ -25,6 +26,7 @@ export default function App() {
         <Route index element={<LibraryPage />} />
         <Route path="/books/:id" element={<BookPage />} />
         <Route path="/library" element={<Navigate to="/" replace />} />
+        <Route path="/support" element={<SupportPage />} />
         <Route element={<ProtectedRoute />}>
           <Route path="/upload" element={<UploadPage />} />
           <Route path="/required" element={<RequiredPage />} />

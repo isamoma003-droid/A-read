@@ -2445,3 +2445,218 @@ input[type='range'] {
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------- Support popup & M-Pesa ---------- */
+.promo-popup {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 40;
+  width: min(360px, calc(100vw - 32px));
+  animation: promo-in 0.25s ease-out;
+}
+
+@keyframes promo-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+}
+
+.promo-card {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
+}
+
+.promo-preview {
+  box-shadow: var(--shadow);
+}
+
+.promo-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+.promo-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.promo-title {
+  font-size: 1.125rem;
+  padding-right: 28px;
+}
+
+.promo-message {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9375rem;
+  white-space: pre-line;
+}
+
+.promo-amounts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.promo-amounts .chip {
+  text-decoration: none;
+}
+
+.promo-footnote {
+  margin: 0;
+}
+
+/* Shrinks over the auto-close time; pauses while hovered or focused. */
+.promo-timer {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  width: 100%;
+  background: var(--accent);
+  transform-origin: left;
+  animation: promo-timer linear forwards;
+}
+
+.promo-timer.paused {
+  animation-play-state: paused;
+}
+
+@keyframes promo-timer {
+  to {
+    transform: scaleX(0);
+  }
+}
+
+.promo-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 20px;
+  align-items: start;
+}
+
+.promo-preview-wrap {
+  position: sticky;
+  top: 80px;
+}
+
+.promo-preview-wrap > p {
+  margin: 0 0 8px;
+}
+
+.promo-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px auto;
+  align-items: center;
+  gap: 16px;
+}
+
+.promo-raised {
+  display: flex;
+  flex-direction: column;
+  text-align: right;
+}
+
+.status-pill.promo-state-live,
+.status-pill.payment-paid {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.status-pill.promo-state-off-hours,
+.status-pill.payment-pending {
+  background: var(--highlight-soft);
+  color: var(--text);
+}
+
+.status-pill.payment-failed {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.payments-filter {
+  max-width: 220px;
+  margin-bottom: 12px;
+}
+
+.support .page-header p.muted {
+  margin: 8px 0 16px;
+}
+
+.support .panel + .panel {
+  margin-top: 16px;
+}
+
+.payment-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+  padding: 32px 20px;
+}
+
+.payment-status p {
+  margin: 0;
+}
+
+.payment-paid > svg {
+  color: var(--accent);
+}
+
+.payment-failed > svg {
+  color: var(--danger);
+}
+
+.manual-steps {
+  margin: 0;
+  padding-left: 20px;
+  line-height: 1.9;
+}
+
+.till {
+  font-size: 1.125rem;
+  letter-spacing: 0.04em;
+}
+
+@media (max-width: 800px) {
+  .promo-editor {
+    grid-template-columns: 1fr;
+  }
+
+  .promo-preview-wrap {
+    position: static;
+  }
+
+  .promo-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .promo-raised {
+    text-align: left;
+  }
+}
+
+@media (max-width: 520px) {
+  .promo-popup {
+    right: 16px;
+    bottom: 16px;
+  }
+}

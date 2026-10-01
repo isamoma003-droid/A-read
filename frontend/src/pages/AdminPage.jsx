@@ -11,12 +11,16 @@ import { FORMAT_LABELS, formatBytes, formatNumber, timeAgo } from '../utils/form
 import { useDebounced } from '../utils/useDebounced.js';
 import { useDocumentTitle } from '../utils/useDocumentTitle.js';
 import AdminAssignments from './AdminAssignments.jsx';
+import AdminPayments from './AdminPayments.jsx';
+import AdminPromotions from './AdminPromotions.jsx';
 
 const TABS = [
   ['overview', 'Overview'],
   ['assignments', 'Assignments'],
   ['users', 'Users'],
   ['books', 'Books'],
+  ['promotions', 'Popups'],
+  ['payments', 'Payments'],
 ];
 
 export default function AdminPage() {
@@ -44,6 +48,8 @@ export default function AdminPage() {
       {tab === 'assignments' && <AdminAssignments />}
       {tab === 'users' && <UsersTab me={user} />}
       {tab === 'books' && <BooksTab />}
+      {tab === 'promotions' && <AdminPromotions />}
+      {tab === 'payments' && <AdminPayments />}
     </div>
   );
 }

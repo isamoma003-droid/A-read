@@ -21,6 +21,8 @@ export const listeningMinutes = (words) => words / 155;
 
 export const formatNumber = (n) => (Number.isFinite(n) ? n.toLocaleString() : '0');
 
+export const formatKes = (n) => `KES ${formatNumber(n)}`;
+
 export function formatBytes(bytes) {
   if (!bytes) return '';
   const units = ['B', 'KB', 'MB', 'GB'];

@@ -6,6 +6,15 @@ process.env.ADMIN_EMAILS = 'alice@example.com';
 process.env.CLOUDINARY_MAX_FILE_MB = '0.004'; // ~4 KB parts so the chunking path is exercised
 process.env.FRONTEND_URL = 'https://a-read.example';
 process.env.GOOGLE_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
+Object.assign(process.env, {
+  MPESA_CONSUMER_KEY: 'key',
+  MPESA_CONSUMER_SECRET: 'secret',
+  MPESA_SHORTCODE: '174379',
+  MPESA_PASSKEY: 'passkey',
+  MPESA_TILL_NUMBER: '5551234',
+  MPESA_CALLBACK_BASE_URL: 'https://api.a-read.example',
+  MPESA_CALLBACK_SECRET: 'callback-secret',
+});
 
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
@@ -512,5 +521,180 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal(res.body.user.email, 'carol@example.com');
     assert.equal(res.body.user.google, true);
     assert.equal((await api('/auth/login', { method: 'POST', body: { email: 'carol@example.com', password: 'password4' } })).status, 200);
+  });
+  let carol;
+
+  test('admins schedule promotion popups for chosen audiences and hours', async () => {
+    carol = (await api('/auth/login', { method: 'POST', body: { email: 'carol@example.com', password: 'password4' } })).body.token;
+    const hour = 3600 * 1000;
+    const iso = (offset) => new Date(Date.now() + offset).toISOString();
+    const body = { title: 'Keep A-Read free', message: 'Chip in via M-Pesa', startsAt: iso(-hour), endsAt: iso(hour), amounts: [50, 200] };
+
+    assert.equal((await api('/promotions', { token: carol, method: 'POST', body })).status, 403);
+    assert.equal((await api('/promotions', { method: 'POST', body })).status, 401);
+    let res = await api('/promotions', { token: alice, method: 'POST', body: { ...body, endsAt: iso(-2 * hour) } });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /after the start/);
+    res = await api('/promotions', { token: alice, method: 'POST', body: { ...body, dailyFrom: '08:00' } });
+    assert.match(res.body.error, /both daily/);
+
+    res = await api('/promotions', { token: alice, method: 'POST', body: { ...body, autoCloseSeconds: 20, frequency: 'day' } });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const promo = res.body.promotion;
+    assert.equal(promo.state, 'live');
+    assert.equal(promo.audience, 'everyone');
+
+    // Guests and readers both see it, with only the fields the popup needs.
+    res = await api('/promotions/active');
+    assert.equal(res.body.promotion.id, promo.id);
+    assert.equal(res.body.promotion.autoCloseSeconds, 20);
+    assert.equal(res.body.promotion.frequency, 'day');
+    assert.equal(res.body.promotion.purpose, undefined);
+    assert.equal((await api('/promotions/active', { token: carol })).body.promotion.id, promo.id);
+
+    // Readers only.
+    await api(`/promotions/${promo.id}`, { token: alice, method: 'PATCH', body: { audience: 'users' } });
+    assert.equal((await api('/promotions/active')).body.promotion, null);
+    assert.equal((await api('/promotions/active', { token: carol })).body.promotion.id, promo.id);
+
+    // Daily hours that exclude the current Kenya time hide it.
+    const { minutesInZone } = await import('../src/utils/time.js');
+    const now = minutesInZone(new Date(), 'Africa/Nairobi');
+    const hhmm = (m) => `${String(Math.floor(((m + 1440) % 1440) / 60)).padStart(2, '0')}:${String(((m + 1440) % 1440) % 60).padStart(2, '0')}`;
+    res = await api(`/promotions/${promo.id}`, { token: alice, method: 'PATCH', body: { dailyFrom: hhmm(now + 60), dailyTo: hhmm(now + 120) } });
+    assert.equal(res.body.promotion.state, 'off-hours');
+    assert.equal((await api('/promotions/active', { token: carol })).body.promotion, null);
+    await api(`/promotions/${promo.id}`, { token: alice, method: 'PATCH', body: { dailyFrom: hhmm(now - 60), dailyTo: hhmm(now + 60) } });
+    assert.equal((await api('/promotions/active', { token: carol })).body.promotion.id, promo.id);
+    res = await api(`/promotions/${promo.id}`, { token: alice, method: 'PATCH', body: { dailyFrom: null, dailyTo: null, paused: true } });
+    assert.equal(res.body.promotion.dailyFrom, undefined);
+    assert.equal(res.body.promotion.state, 'paused');
+    assert.equal((await api('/promotions/active', { token: carol })).body.promotion, null);
+
+    // Future ones wait for their start time.
+    res = await api('/promotions', { token: alice, method: 'POST', body: { ...body, title: 'Later', startsAt: iso(hour), endsAt: iso(2 * hour) } });
+    assert.equal(res.body.promotion.state, 'scheduled');
+    assert.equal((await api('/promotions/active')).body.promotion, null);
+
+    const list = await api('/promotions', { token: alice });
+    assert.deepEqual(list.body.promotions.map((p) => p.state).sort(), ['paused', 'scheduled']);
+    assert.equal(list.body.timeZone, 'Africa/Nairobi');
+    assert.equal((await api('/promotions', { token: carol })).status, 403);
+    assert.equal((await api(`/promotions/${res.body.promotion.id}`, { token: alice, method: 'DELETE' })).status, 204);
+  });
+
+  test('M-Pesa STK payments settle through the callback or a status check', async () => {
+    const { Payment } = await import('../src/models/Payment.js');
+    const { setMpesaTransport } = await import('../src/services/mpesa.js');
+    const calls = [];
+    let pushFails = false;
+    let queryResult = { status: 500, json: { errorCode: '500.001.1001', errorMessage: 'The transaction is being processed' } };
+    let next = 0;
+    setMpesaTransport(async (url, { body }) => {
+      calls.push({ url, body });
+      if (url.includes('/oauth/')) return { status: 200, json: { access_token: 'token', expires_in: '3599' } };
+      if (url.includes('/stkpushquery/')) return queryResult;
+      if (pushFails) return { status: 400, json: { errorCode: '400.002.02', errorMessage: 'Bad Request - Invalid Amount' } };
+      next++;
+      return { status: 200, json: { ResponseCode: '0', CheckoutRequestID: `ws_CO_${next}`, MerchantRequestID: `m_${next}`, CustomerMessage: 'Success' } };
+    });
+    const callback = (checkoutId, resultCode, items = []) =>
+      api('/payments/mpesa/callback/callback-secret', {
+        method: 'POST',
+        body: { Body: { stkCallback: { MerchantRequestID: 'm', CheckoutRequestID: checkoutId, ResultCode: resultCode, ResultDesc: 'desc', CallbackMetadata: { Item: items } } } },
+      });
+
+    let res = await api('/payments/config');
+    assert.deepEqual(res.body, { enabled: true, method: 'till', number: '5551234', accountReference: null, minAmount: 10, maxAmount: 150000 });
+
+    res = await api('/payments/stk', { method: 'POST', body: { phone: '0812 000 000', amount: 100 } });
+    assert.equal(res.status, 400);
+    res = await api('/payments/stk', { method: 'POST', body: { phone: '0712345678', amount: 5 } });
+    assert.match(res.body.error, /smallest amount is KES 10/);
+
+    // A reader pays from a promotion: the purpose comes from the promotion, not the browser.
+    const promo = (
+      await api('/promotions', {
+        token: alice,
+        method: 'POST',
+        body: { title: 'Premium', purpose: 'premium', startsAt: new Date(Date.now() - 1000).toISOString(), endsAt: new Date(Date.now() + 3600e3).toISOString() },
+      })
+    ).body.promotion;
+    res = await api('/payments/stk', { token: carol, method: 'POST', body: { phone: '+254 712 345 678', amount: 150, promotionId: promo.id, purpose: 'hacked' } });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const paid = res.body.payment;
+    assert.equal(paid.status, 'pending');
+    const push = calls.find((c) => c.url.endsWith('/mpesa/stkpush/v1/processrequest'));
+    assert.equal(push.url, 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest');
+    assert.equal(push.body.TransactionType, 'CustomerBuyGoodsOnline');
+    assert.equal(push.body.BusinessShortCode, '174379');
+    assert.equal(push.body.PartyB, '5551234');
+    assert.equal(push.body.PhoneNumber, '254712345678');
+    assert.equal(push.body.Amount, 150);
+    assert.equal(push.body.CallBackURL, 'https://api.a-read.example/api/payments/mpesa/callback/callback-secret');
+    assert.equal(Buffer.from(push.body.Password, 'base64').toString(), `174379passkey${push.body.Timestamp}`);
+
+    // One prompt at a time per phone.
+    res = await api('/payments/stk', { method: 'POST', body: { phone: '0712345678', amount: 50 } });
+    assert.equal(res.status, 429);
+
+    // Wrong secret: ignored. Right secret: settled with the receipt.
+    assert.equal((await api('/payments/mpesa/callback/wrong-secret-xx', { method: 'POST', body: {} })).status, 404);
+    res = await callback('ws_CO_1', 0, [
+      { Name: 'Amount', Value: 150 },
+      { Name: 'MpesaReceiptNumber', Value: 'TJK1ABC234' },
+      { Name: 'PhoneNumber', Value: 254712345678 },
+    ]);
+    assert.deepEqual(res.body, { ResultCode: 0, ResultDesc: 'Accepted' });
+    res = await api(`/payments/${paid.id}`);
+    assert.equal(res.body.payment.status, 'paid');
+    assert.equal(res.body.payment.receipt, 'TJK1ABC234');
+    assert.equal(res.body.payment.message, 'Payment received');
+    const carolId = (await api('/auth/me', { token: carol })).body.user.id;
+    assert.equal(await Payment.hasPaid(carolId, 'premium', 100), true);
+    assert.equal(await Payment.hasPaid(carolId, 'premium', 200), false);
+    assert.equal(await Payment.hasPaid(carolId, 'donation'), false);
+
+    // A guest cancels on the phone.
+    res = await api('/payments/stk', { method: 'POST', body: { phone: '0722000111', amount: 50 } });
+    const cancelled = res.body.payment;
+    await callback('ws_CO_2', 1032);
+    res = await api(`/payments/${cancelled.id}`);
+    assert.equal(res.body.payment.status, 'failed');
+    assert.match(res.body.payment.message, /cancelled/);
+
+    // The callback never arrives: after 20 s the status endpoint asks Daraja itself.
+    res = await api('/payments/stk', { method: 'POST', body: { phone: '0733000222', amount: 75 } });
+    const lost = res.body.payment;
+    assert.equal((await api(`/payments/${lost.id}`)).body.payment.status, 'pending');
+    assert.equal(calls.filter((c) => c.url.includes('/stkpushquery/')).length, 0);
+    await Payment.collection.updateOne({ _id: new mongoose.Types.ObjectId(lost.id) }, { $set: { createdAt: new Date(Date.now() - 30_000) } });
+    assert.equal((await api(`/payments/${lost.id}`)).body.payment.status, 'pending');
+    assert.equal(calls.filter((c) => c.url.includes('/stkpushquery/')).length, 1);
+    queryResult = { status: 200, json: { ResponseCode: '0', ResultCode: '0', ResultDesc: 'The service request is processed successfully.' } };
+    await Payment.collection.updateOne({ _id: new mongoose.Types.ObjectId(lost.id) }, { $set: { checkedAt: new Date(Date.now() - 60_000) } });
+    assert.equal((await api(`/payments/${lost.id}`)).body.payment.status, 'paid');
+    // A late callback still fills in the receipt.
+    await callback('ws_CO_3', 0, [{ Name: 'Amount', Value: 75 }, { Name: 'MpesaReceiptNumber', Value: 'TJK9LATE00' }]);
+    assert.equal((await api(`/payments/${lost.id}`)).body.payment.receipt, 'TJK9LATE00');
+
+    // Daraja refuses the request.
+    pushFails = true;
+    res = await api('/payments/stk', { method: 'POST', body: { phone: '0744000333', amount: 60 } });
+    assert.equal(res.status, 502);
+
+    // Admin view.
+    assert.equal((await api('/payments', { token: carol })).status, 403);
+    res = await api('/payments', { token: alice });
+    assert.equal(res.body.payments.length, 4);
+    assert.equal(res.body.totals.amount, 225);
+    assert.equal(res.body.totals.count, 2);
+    assert.deepEqual(res.body.totals.byPurpose, { premium: { amount: 150, count: 1 }, donation: { amount: 75, count: 1 } });
+    const first = res.body.payments.find((p) => p.receipt === 'TJK1ABC234');
+    assert.equal(first.user.name, 'Carol');
+    assert.equal(first.promotion.title, 'Premium');
+    assert.equal((await api('/payments?status=failed', { token: alice })).body.payments.length, 2);
+    assert.equal((await api('/promotions', { token: alice })).body.promotions.find((p) => p.id === promo.id).raised, 150);
+    setMpesaTransport(null);
   });
 });

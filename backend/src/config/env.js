@@ -57,4 +57,25 @@ export const env = {
   emailFromName: process.env.EMAIL_FROM_NAME || 'A-Read',
   // OAuth client ID for "Sign in with Google" (Google Cloud console → Credentials).
   googleClientId: process.env.GOOGLE_CLIENT_ID || '',
+  // Daily popup hours are read in this time zone.
+  timeZone: process.env.TIME_ZONE || 'Africa/Nairobi',
+  // M-Pesa (Safaricom Daraja) STK Push to a Buy Goods till or a Paybill.
+  mpesa: {
+    environment: process.env.MPESA_ENV === 'production' ? 'production' : 'sandbox',
+    consumerKey: process.env.MPESA_CONSUMER_KEY || '',
+    consumerSecret: process.env.MPESA_CONSUMER_SECRET || '',
+    // Business short code used to sign requests: the store (head office) number for a till,
+    // or the Paybill number.
+    shortcode: process.env.MPESA_SHORTCODE || '',
+    passkey: process.env.MPESA_PASSKEY || '',
+    // The till customers pay into. Leave empty to use a Paybill (MPESA_SHORTCODE).
+    tillNumber: process.env.MPESA_TILL_NUMBER || '',
+    // Public HTTPS address of this API, e.g. https://api.example.com (Safaricom calls it back).
+    callbackBaseUrl: (process.env.MPESA_CALLBACK_BASE_URL || '').replace(/\/$/, ''),
+    // Random string that makes the callback URL unguessable.
+    callbackSecret: process.env.MPESA_CALLBACK_SECRET || '',
+    accountReference: process.env.MPESA_ACCOUNT_REFERENCE || 'A-Read',
+    minAmount: number('MPESA_MIN_AMOUNT', 10),
+    maxAmount: number('MPESA_MAX_AMOUNT', 150_000),
+  },
 };
