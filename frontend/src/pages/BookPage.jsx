@@ -13,6 +13,7 @@ import {
   useVoices,
 } from '../api/queries.js';
 import BookCover from '../components/BookCover.jsx';
+import ShareButton from '../components/ShareButton.jsx';
 import FileDrop from '../components/FileDrop.jsx';
 import { ErrorMessage, PageLoader, ProgressBar, Spinner } from '../components/Feedback.jsx';
 import NotFoundPage from './NotFoundPage.jsx';
@@ -40,6 +41,7 @@ export default function BookPage() {
   return (
     <div className="book-page">
       <div className="book-hero">
+        {book.cover?.url && <div className="book-backdrop" style={{ backgroundImage: `url("${book.cover.url}")` }} aria-hidden="true" />}
         <BookCover book={book} size="large" />
         <div className="book-info">
           <div className="book-badges">
@@ -82,6 +84,7 @@ export default function BookPage() {
                 <Headphones size={18} aria-hidden="true" /> Listen
               </Link>
             )}
+            <ShareButton book={book} />
             {book.canEdit && (
               <button type="button" className="button button-ghost" onClick={() => setEditing((v) => !v)}>
                 <Pencil size={16} aria-hidden="true" /> {editing ? 'Close editor' : 'Edit'}

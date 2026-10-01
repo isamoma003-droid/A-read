@@ -45,6 +45,7 @@ function useAuthForm(submit) {
 
 export function LoginPage() {
   const { user, login } = useAuth();
+  const location = useLocation();
   const { error, busy, onSubmit } = useAuthForm((form) => login(form.get('email'), form.get('password')));
   if (user) return <Navigate to="/" replace />;
   return (
@@ -53,7 +54,10 @@ export function LoginPage() {
       subtitle="Log in to read and listen to the shared library."
       footer={
         <>
-          New here? <Link to="/register">Create an account</Link>
+          New here?{' '}
+          <Link to="/register" state={location.state}>
+            Create an account
+          </Link>
         </>
       }
     >
@@ -77,6 +81,7 @@ export function LoginPage() {
 
 export function RegisterPage() {
   const { user, register } = useAuth();
+  const location = useLocation();
   const { error, busy, onSubmit } = useAuthForm((form) =>
     register(form.get('name'), form.get('email'), form.get('password')),
   );
@@ -87,7 +92,10 @@ export function RegisterPage() {
       subtitle="Upload books, read them anywhere, or have them read to you."
       footer={
         <>
-          Already have an account? <Link to="/login">Log in</Link>
+          Already have an account?{' '}
+          <Link to="/login" state={location.state}>
+            Log in
+          </Link>
         </>
       }
     >

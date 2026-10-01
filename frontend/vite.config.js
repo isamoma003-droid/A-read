@@ -14,6 +14,6 @@ export default defineConfig({
   server: {
     port: 5173,
     // In development the API runs on :5000; the proxy avoids CORS setup.
-    proxy: { '/api': 'http://localhost:5000' },
+    proxy: { '/api': 'http://localhost:5000', '/share': 'http://localhost:5000' },
   },
 });

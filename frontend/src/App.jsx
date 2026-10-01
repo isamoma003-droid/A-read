@@ -2,6 +2,7 @@ import { Suspense, lazy } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import Layout from './components/Layout.jsx';
 import ProtectedRoute from './components/ProtectedRoute.jsx';
+import AdminPage from './pages/AdminPage.jsx';
 import BookPage from './pages/BookPage.jsx';
 import LibraryPage from './pages/LibraryPage.jsx';
 import { LoginPage, RegisterPage } from './pages/AuthPages.jsx';
@@ -31,6 +32,7 @@ export default function App() {
           <Route index element={<LibraryPage />} />
           <Route path="/upload" element={<UploadPage />} />
           <Route path="/books/:id" element={<BookPage />} />
+          <Route path="/admin" element={<AdminPage />} />
           <Route path="/library" element={<Navigate to="/" replace />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>

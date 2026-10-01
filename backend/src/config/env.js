@@ -35,11 +35,16 @@ export const env = {
   jwtSecret: isTest ? 'test-secret' : required('JWT_SECRET'),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
   clientOrigins: list('CLIENT_ORIGIN').length ? list('CLIENT_ORIGIN') : ['http://localhost:5173'],
+  // Where shared links send people (defaults to the first CLIENT_ORIGIN).
+  frontendUrl: (process.env.FRONTEND_URL || list('CLIENT_ORIGIN')[0] || 'http://localhost:5173').replace(/\/$/, ''),
   adminEmails: list('ADMIN_EMAILS'),
   cloudinaryUrl: process.env.CLOUDINARY_URL,
   cloudinaryFolder: process.env.CLOUDINARY_FOLDER || 'a-read',
-  maxBookMb: number('MAX_BOOK_MB', 50),
-  maxAudioMb: number('MAX_AUDIO_MB', 300),
+  maxBookMb: number('MAX_BOOK_MB', 100),
+  maxAudioMb: number('MAX_AUDIO_MB', 100),
+  // Largest single file your Cloudinary plan accepts (free plan: 10 MB for PDFs/raw files).
+  // Bigger books are stored as several parts below this size.
+  cloudinaryMaxFileMb: number('CLOUDINARY_MAX_FILE_MB', 10),
   maxCoverMb: number('MAX_COVER_MB', 5),
   // Google Cloud TTS uses GOOGLE_APPLICATION_CREDENTIALS (path to a service-account JSON file).
   googleTtsEnabled: Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS),

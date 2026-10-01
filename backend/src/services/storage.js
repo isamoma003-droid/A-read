@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises';
 import { cloudinary } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
 
@@ -37,6 +38,24 @@ export async function uploadFile(filePath, { publicId, resourceType, size = 0, t
       : cloudinary.uploader.upload(filePath, options, done),
   );
   return toAsset(result, resourceType);
+}
+
+// Stores a book file as raw data. Files above the plan's per-file limit are split into parts
+// (book.epub.part0, .part1, …) that the reader downloads and joins back together.
+export async function uploadBookFile(filePath, { publicId, size }) {
+  const partBytes = Math.floor(env.cloudinaryMaxFileMb * 1024 * 1024 * 0.95);
+  if (size <= partBytes) return uploadFile(filePath, { publicId, resourceType: 'raw', size });
+
+  const data = await fs.readFile(filePath);
+  const parts = [];
+  for (let offset = 0, i = 0; offset < data.length; offset += partBytes, i++) {
+    const part = await uploadBuffer(data.subarray(offset, offset + partBytes), {
+      publicId: `${publicId}.part${i}`,
+      resourceType: 'raw',
+    });
+    parts.push({ url: part.url, publicId: part.publicId, bytes: part.bytes });
+  }
+  return { url: parts[0].url, publicId, resourceType: 'raw', bytes: data.length, parts };
 }
 
 export async function uploadBuffer(buffer, { publicId, resourceType, transformation }) {

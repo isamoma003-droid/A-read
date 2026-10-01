@@ -13,6 +13,8 @@ export const keys = {
   tags: ['tags'],
   ttsStatus: ['tts-status'],
   voices: (language) => ['voices', language],
+  adminStats: ['admin', 'stats'],
+  adminUsers: (q) => ['admin', 'users', q],
 };
 
 function toQuery(params) {
@@ -99,3 +101,12 @@ export function useBookMutation(id, mutationFn, options = {}) {
     },
   });
 }
+
+export const useAdminStats = () => useQuery({ queryKey: keys.adminStats, queryFn: () => api('/admin/stats') });
+
+export const useAdminUsers = (q) =>
+  useQuery({
+    queryKey: keys.adminUsers(q),
+    queryFn: () => api(`/admin/users${toQuery({ q })}`).then((r) => r.users),
+    placeholderData: (previous) => previous,
+  });

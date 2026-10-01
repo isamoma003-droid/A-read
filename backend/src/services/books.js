@@ -16,7 +16,7 @@ import {
   bookFolder,
   deleteBookFolder,
   destroyAsset,
-  pdfCoverUrl,
+  uploadBookFile,
   uploadBuffer,
   uploadFile,
 } from './storage.js';
@@ -49,11 +49,7 @@ export async function createBook({ user, files, fields }) {
   const bookId = new mongoose.Types.ObjectId();
   const folder = bookFolder(bookId);
   try {
-    const fileAsset = await uploadFile(file.path, {
-      publicId: format === 'pdf' ? `${folder}/book` : `${folder}/book.${format}`,
-      resourceType: format === 'pdf' ? 'image' : 'raw',
-      size: file.size,
-    });
+    const fileAsset = await uploadBookFile(file.path, { publicId: `${folder}/book.${format}`, size: file.size });
 
     let cover;
     let coverSource = 'none';
@@ -71,10 +67,8 @@ export async function createBook({ user, files, fields }) {
         transformation: COVER_TRANSFORMATION,
       }).catch(() => undefined); // an odd embedded image shouldn't block the upload
       if (cover) coverSource = 'epub';
-    } else if (format === 'pdf') {
-      cover = { url: pdfCoverUrl(fileAsset.publicId), publicId: fileAsset.publicId, resourceType: 'image', format: 'jpg' };
-      coverSource = 'pdf';
     }
+    // PDFs: the upload page renders page 1 in the browser and sends it as the cover.
 
     const { metadata, stats } = extracted;
     const fallbackTitle = path.parse(file.originalname).name.replace(/[_]+/g, ' ').trim();

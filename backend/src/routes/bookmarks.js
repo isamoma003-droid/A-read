@@ -17,7 +17,7 @@ router.patch('/:id', validate(updateSchema), async (req, res) => {
   const bookmark = await Bookmark.findOneAndUpdate(
     { _id: req.params.id, user: req.user._id },
     { $set: req.valid.body },
-    { new: true },
+    { returnDocument: 'after' },
   );
   if (!bookmark) throw notFound('Bookmark not found');
   res.json({ bookmark });

@@ -2,6 +2,9 @@
 //   MONGODB_URI_TEST=mongodb://127.0.0.1:27017/a-read-test npm test
 // Cloudinary calls are stubbed, so no Cloudinary account is needed.
 process.env.NODE_ENV ||= 'test'; // must be set before src/ modules load (they're imported in before())
+process.env.ADMIN_EMAILS = 'alice@example.com';
+process.env.CLOUDINARY_MAX_FILE_MB = '0.004'; // ~4 KB parts so the chunking path is exercised
+process.env.FRONTEND_URL = 'https://a-read.example';
 
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
@@ -146,9 +149,22 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     res = await api('/books', { token: bob, method: 'POST', form: bookForm('doc.pdf', makePdf([['Hello PDF.']], { title: 'Pdf Title' })) });
     assert.equal(res.status, 201, JSON.stringify(res.body));
     assert.equal(res.body.book.title, 'Pdf Title');
-    assert.equal(res.body.book.coverSource, 'pdf');
-    assert.match(res.body.book.cover.url, /pg_1/);
-    assert.equal(res.body.book.file.resourceType, 'image');
+    assert.equal(res.body.book.coverSource, 'none');
+    assert.equal(res.body.book.file.resourceType, 'raw');
+    assert.match(res.body.book.file.publicId, /book\.pdf$/);
+    assert.equal(res.body.book.file.parts, undefined);
+  });
+
+  test('large files are stored as parts under the per-file limit', async () => {
+    const big = Array.from({ length: 400 }, (_, i) => `Sentence number ${i}.`).join(' ');
+    const res = await api('/books', { token: bob, method: 'POST', form: bookForm('big.txt', big) });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const { file } = res.body.book;
+    assert.ok(file.parts.length >= 2);
+    assert.deepEqual(file.parts.map((p) => p.publicId.split('.').pop()), file.parts.map((_, i) => `part${i}`));
+    assert.equal(file.url, file.parts[0].url);
+    const del = await api(`/books/${res.body.book.id}`, { token: bob, method: 'DELETE' });
+    assert.equal(del.status, 204);
   });
 
   test('shared library lists, searches and filters every book', async () => {
@@ -173,6 +189,38 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.deepEqual(res.body.tags.map((t) => t.tag).sort(), ['classic', 'mystery']);
     res = await api('/books?format=doc', { token: alice });
     assert.equal(res.status, 400);
+  });
+
+  test('share page serves link-preview tags and redirects to the app', async () => {
+    const res = await fetch(`${base.replace('/api', '')}/share/books/${txtBook.id}`, { redirect: 'manual' });
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /<meta property="og:title" content="dark night by A\. Writer">/);
+    assert.match(html, new RegExp(`https://a-read\\.example/books/${txtBook.id}`));
+    const missing = await fetch(`${base.replace('/api', '')}/share/books/nope`, { redirect: 'manual' });
+    assert.equal(missing.status, 302);
+    assert.equal(missing.headers.get('location'), 'https://a-read.example');
+  });
+
+  test('admin panel API is admin-only', async () => {
+    assert.equal((await api('/admin/stats', { token: bob })).status, 403);
+    const stats = await api('/admin/stats', { token: alice });
+    assert.equal(stats.status, 200);
+    assert.equal(stats.body.users, 2);
+    assert.equal(stats.body.books, 3);
+    assert.equal(stats.body.formats.txt, 1);
+    assert.ok(stats.body.words > 0, `words: ${stats.body.words}`);
+    assert.ok(stats.body.storageBytes > 0);
+    const users = (await api('/admin/users', { token: alice })).body.users;
+    const bobUser = users.find((u) => u.email === 'bob@example.com');
+    assert.equal(bobUser.books, 2);
+    const me = users.find((u) => u.email === 'alice@example.com');
+    assert.equal(me.role, 'admin');
+    assert.equal((await api(`/admin/users/${me.id}`, { token: alice, method: 'PATCH', body: { role: 'user' } })).status, 400);
+    let res = await api(`/admin/users/${bobUser.id}`, { token: alice, method: 'PATCH', body: { role: 'admin' } });
+    assert.equal(res.body.user.role, 'admin');
+    res = await api(`/admin/users/${bobUser.id}`, { token: alice, method: 'PATCH', body: { role: 'user' } });
+    assert.equal(res.body.user.role, 'user');
   });
 
   test('only the uploader can edit a book', async () => {
@@ -301,5 +349,14 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal((await api('/progress', { token: bob })).body.items.length, 0);
     assert.ok(destroyed.some((p) => p.includes(`books/${txtBook.id}/`)));
     assert.equal((await api('/books/not-an-id', { token: alice })).status, 400);
+  });
+
+  test('admin can delete a user and their uploads', async () => {
+    const users = (await api('/admin/users', { token: alice })).body.users;
+    const bobUser = users.find((u) => u.email === 'bob@example.com');
+    const res = await api(`/admin/users/${bobUser.id}?deleteBooks=true`, { token: alice, method: 'DELETE' });
+    assert.equal(res.status, 204);
+    assert.equal((await api('/auth/me', { token: bob })).status, 401);
+    assert.equal((await api('/books', { token: alice })).body.total, 0);
   });
 });

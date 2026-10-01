@@ -4,12 +4,14 @@ import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/TextLayer.css';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import { ErrorMessage, Spinner } from '../components/Feedback.jsx';
+import { usePdfSource } from '../utils/bookFile.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/legacy/build/pdf.worker.min.mjs', import.meta.url).toString();
 
-export default function PdfView({ url, pageNumber, pageCount, onPageChange, zoom, onZoom, caption }) {
+export default function PdfView({ file, pageNumber, pageCount, onPageChange, zoom, onZoom, caption }) {
   const wrap = useRef(null);
   const [width, setWidth] = useState(700);
+  const { source, error } = usePdfSource(file);
 
   useEffect(() => {
     const el = wrap.current;
@@ -44,8 +46,11 @@ export default function PdfView({ url, pageNumber, pageCount, onPageChange, zoom
           <span className="sr-only">Zoom in</span>
         </button>
       </div>
+      {error && <ErrorMessage>Could not download this PDF: {error.message}</ErrorMessage>}
+      {!source && !error && <Spinner label="Downloading PDF…" />}
+      {source && (
       <Document
-        file={url}
+        file={source}
         className="pdf-document"
         loading={<Spinner label="Loading PDF…" />}
         error={
@@ -57,6 +62,7 @@ export default function PdfView({ url, pageNumber, pageCount, onPageChange, zoom
       >
         <Page pageNumber={pageNumber} width={Math.max(200, width * zoom)} renderAnnotationLayer={false} loading={<Spinner />} />
       </Document>
+      )}
       {caption}
     </div>
   );

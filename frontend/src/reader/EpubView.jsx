@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import ePub from 'epubjs';
+import { fetchBookFile } from '../utils/bookFile.js';
 import { useLatest } from '../utils/useLatest.js';
 import { ErrorMessage, Spinner } from '../components/Feedback.jsx';
 
@@ -13,9 +14,9 @@ const FONTS = { serif: '"Literata", Georgia, serif', sans: '"Inter", system-ui, 
 
 const samePath = (a, b) => Boolean(a && b) && (a.split('#')[0] === b.split('#')[0] || a.endsWith(`/${b}`) || b.endsWith(`/${a}`));
 
-// Paginated EPUB rendering with epub.js (mount with key={url}). Reports the current spine href/CFI and follows `href`
+// Paginated EPUB rendering with epub.js (mount with key={file.publicId}). Reports the current spine href/CFI and follows `href`
 // when the reader moves to another chapter (TOC, audio).
-export default function EpubView({ url, href, initialCfi, theme, fontSize, fontFamily, onRelocated, caption }) {
+export default function EpubView({ file, href, initialCfi, theme, fontSize, fontFamily, onRelocated, caption }) {
   const viewer = useRef(null);
   const rendition = useRef(null);
   const shownHref = useRef(null);
@@ -28,9 +29,7 @@ export default function EpubView({ url, href, initialCfi, theme, fontSize, fontF
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`Download failed (${res.status})`);
-        const data = await res.arrayBuffer();
+        const data = await fetchBookFile(file);
         if (cancelled) return;
         book = ePub(data);
         const r = book.renderTo(viewer.current, { width: '100%', height: '100%', spread: 'none', flow: 'paginated' });
@@ -56,7 +55,7 @@ export default function EpubView({ url, href, initialCfi, theme, fontSize, fontF
       rendition.current = null;
       book?.destroy();
     };
-  }, [url, latest]);
+  }, [file, latest]);
 
   useEffect(() => {
     if (ready && href && !samePath(shownHref.current, href)) rendition.current?.display(href);

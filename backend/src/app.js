@@ -7,10 +7,12 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import { env } from './config/env.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
+import adminRoutes from './routes/admin.js';
 import authRoutes from './routes/auth.js';
 import bookmarkRoutes from './routes/bookmarks.js';
 import bookRoutes from './routes/books.js';
 import progressRoutes from './routes/progress.js';
+import shareRoutes from './routes/share.js';
 import ttsRoutes from './routes/tts.js';
 
 export function createApp() {
@@ -27,7 +29,9 @@ export function createApp() {
   app.use('/api/bookmarks', bookmarkRoutes);
   app.use('/api/progress', progressRoutes);
   app.use('/api/tts', ttsRoutes);
+  app.use('/api/admin', adminRoutes);
   app.use('/api', notFoundHandler);
+  app.use('/share', shareRoutes);
 
   // Optionally serve the built frontend from the same server (SERVE_CLIENT=true).
   const clientDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../frontend/dist');

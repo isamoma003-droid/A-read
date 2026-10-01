@@ -2,8 +2,9 @@ import { Library, Search, Upload, X } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { useBooks, useContinueReading, useTags } from '../api/queries.js';
-import BookCard from '../components/BookCard.jsx';
+import BookCard, { BookCardSkeleton } from '../components/BookCard.jsx';
 import { EmptyState, ErrorMessage, Spinner } from '../components/Feedback.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 import { useDebounced } from '../utils/useDebounced.js';
 
 const FORMATS = [
@@ -35,6 +36,7 @@ function ContinueReading() {
 }
 
 export default function LibraryPage() {
+  const { user } = useAuth();
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState(params.get('q') || '');
   const debouncedQuery = useDebounced(query.trim(), 350);
@@ -67,25 +69,33 @@ export default function LibraryPage() {
 
   return (
     <div className="library">
+      <section className="hero">
+        <div className="hero-text">
+          <p className="eyebrow">Hello, {user.name.split(' ')[0]}</p>
+          <h1>What will you read — or hear — today?</h1>
+          <p className="muted">Every book in the shared library can be read on screen or listened to.</p>
+        </div>
+        <label className="search search-hero">
+          <Search size={20} aria-hidden="true" />
+          <input
+            type="search"
+            placeholder="Search titles, authors, tags…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            aria-label="Search the library"
+          />
+        </label>
+      </section>
+
       {!filtering && <ContinueReading />}
 
       <section>
         <div className="library-header">
-          <h1 className="section-title">Library</h1>
+          <h2 className="section-title">Library</h2>
           {books.isSuccess && <span className="muted">{total === 1 ? '1 book' : `${total} books`}</span>}
         </div>
 
         <div className="filters">
-          <label className="search">
-            <Search size={18} aria-hidden="true" />
-            <input
-              type="search"
-              placeholder="Search titles, authors, tags…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              aria-label="Search the library"
-            />
-          </label>
           <select value={filters.format} onChange={(e) => setParam('format', e.target.value)} aria-label="Format">
             {FORMATS.map(([value, label]) => (
               <option key={value} value={value}>
@@ -128,8 +138,10 @@ export default function LibraryPage() {
         )}
 
         {books.isPending && (
-          <div className="center-block">
-            <Spinner size={24} label="Loading books…" />
+          <div className="book-grid">
+            {Array.from({ length: 8 }, (_, i) => (
+              <BookCardSkeleton key={i} />
+            ))}
           </div>
         )}
         <ErrorMessage error={books.error} />

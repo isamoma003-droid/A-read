@@ -1,4 +1,4 @@
-import { BookOpen, LogOut, Moon, Sun, Upload } from 'lucide-react';
+import { BookOpen, LogOut, Moon, Shield, Sun, Upload } from 'lucide-react';
 import { Link, NavLink, Outlet } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
@@ -29,9 +29,14 @@ export default function Layout() {
             A-Read
           </Link>
           <nav className="topnav">
-            <NavLink to="/" end>
+            <NavLink to="/" end className="nav-library">
               Library
             </NavLink>
+            {user.role === 'admin' && (
+              <NavLink to="/admin" title="Admin panel">
+                <Shield size={16} aria-hidden="true" /> <span className="hide-mobile">Admin</span>
+              </NavLink>
+            )}
             <NavLink to="/upload" className="button button-primary button-small">
               <Upload size={16} aria-hidden="true" /> <span className="hide-mobile">Upload</span>
             </NavLink>

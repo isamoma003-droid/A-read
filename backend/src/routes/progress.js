@@ -47,7 +47,7 @@ router.put('/:bookId', validate(progressSchema), async (req, res) => {
   const progress = await Progress.findOneAndUpdate(
     { user: req.user._id, book: book._id },
     { $set: req.valid.body },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true },
   );
   res.json({ progress });
 });

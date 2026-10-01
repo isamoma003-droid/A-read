@@ -461,7 +461,7 @@ function Reader({ book, sections, saved, requestedSection, listen }) {
           >
           {view === 'page' && book.format === 'pdf' && (
             <PdfView
-              url={book.file.url}
+              file={book.file}
               pageNumber={position.section + 1}
               pageCount={sections.length}
               onPageChange={(page) => jump({ sectionIndex: page - 1 })}
@@ -472,8 +472,8 @@ function Reader({ book, sections, saved, requestedSection, listen }) {
           )}
           {view === 'page' && book.format === 'epub' && (
             <EpubView
-              key={book.file.url}
-              url={book.file.url}
+              key={book.file.publicId}
+              file={book.file}
               href={sectionMeta?.href}
               initialCfi={epubLoc.section === position.section ? epubLoc.cfi : undefined}
               theme={theme}

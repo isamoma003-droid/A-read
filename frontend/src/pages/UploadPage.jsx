@@ -1,116 +1,254 @@
-import { useState } from 'react';
-import { ImagePlus } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { CheckCircle2, CircleAlert, FileText, ImagePlus, LoaderCircle, Plus, UploadCloud, X } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { upload } from '../api/client.js';
 import { keys } from '../api/queries.js';
 import FileDrop from '../components/FileDrop.jsx';
-import { ErrorMessage, ProgressBar, Spinner } from '../components/Feedback.jsx';
+import { ErrorMessage, ProgressBar } from '../components/Feedback.jsx';
+import { formatBytes } from '../utils/format.js';
+import { pdfCoverFromFile } from '../utils/pdfCover.js';
 
 const BOOK_TYPES = '.pdf,.epub,.txt,application/pdf,application/epub+zip,text/plain';
+const MAX_MB = Number(import.meta.env.VITE_MAX_BOOK_MB || 100);
+const MAX_FILES = 20;
+const extension = (name) => name.slice(name.lastIndexOf('.')).toLowerCase();
+
+let nextId = 0;
 
 export default function UploadPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [file, setFile] = useState(null);
+  const input = useRef(null);
+  const [items, setItems] = useState([]);
   const [cover, setCover] = useState(null);
-  const [progress, setProgress] = useState(null);
+  const [over, setOver] = useState(false);
   const [error, setError] = useState(null);
+  const [running, setRunning] = useState(false);
+
+  const single = items.length === 1;
+  const finished = items.length > 0 && items.every((i) => i.status === 'done');
+  const patch = (id, change) => setItems((list) => list.map((i) => (i.id === id ? { ...i, ...change } : i)));
+
+  const addFiles = (fileList) => {
+    setError(null);
+    const accepted = [];
+    const rejected = [];
+    for (const file of fileList) {
+      if (!['.pdf', '.epub', '.txt'].includes(extension(file.name))) rejected.push(`${file.name} (not PDF/EPUB/TXT)`);
+      else if (file.size > MAX_MB * 1024 * 1024) rejected.push(`${file.name} (over ${MAX_MB} MB)`);
+      else accepted.push({ id: ++nextId, file, status: 'queued', progress: 0 });
+    }
+    setItems((list) => {
+      const fresh = list.filter((i) => i.status !== 'done');
+      return [...fresh, ...accepted].slice(0, MAX_FILES);
+    });
+    if (rejected.length) setError(new Error(`Skipped: ${rejected.join(', ')}`));
+  };
 
   const onSubmit = async (event) => {
     event.preventDefault();
-    if (!file) {
-      setError(new Error('Choose a PDF, EPUB or TXT file first'));
-      return;
-    }
-    const form = new FormData(event.currentTarget);
-    form.append('file', file);
-    if (cover) form.append('cover', cover);
+    const queue = items.filter((i) => i.status === 'queued' || i.status === 'error');
+    if (!queue.length) return;
+    const shared = new FormData(event.currentTarget);
+    setRunning(true);
     setError(null);
-    setProgress(0);
-    try {
-      const { book } = await upload('/books', form, { onProgress: setProgress });
-      queryClient.setQueryData(keys.book(book.id), book);
-      queryClient.invalidateQueries({ queryKey: ['books'] });
-      queryClient.invalidateQueries({ queryKey: keys.tags });
-      navigate(`/books/${book.id}`);
-    } catch (err) {
-      setError(err);
-      setProgress(null);
+    const created = [];
+
+    for (const item of queue) {
+      const form = new FormData();
+      for (const key of ['tags', 'language', 'description']) {
+        if (shared.get(key)) form.append(key, shared.get(key));
+      }
+      if (single) {
+        for (const key of ['title', 'author']) if (shared.get(key)) form.append(key, shared.get(key));
+      }
+      form.append('file', item.file);
+      let coverFile = single ? cover : null;
+      if (!coverFile && extension(item.file.name) === '.pdf') {
+        patch(item.id, { status: 'preparing' });
+        coverFile = await pdfCoverFromFile(item.file);
+      }
+      if (coverFile) form.append('cover', coverFile);
+
+      patch(item.id, { status: 'uploading', progress: 0, error: null });
+      try {
+        const { book } = await upload('/books', form, {
+          onProgress: (p) => patch(item.id, { progress: p, status: p >= 1 ? 'processing' : 'uploading' }),
+        });
+        queryClient.setQueryData(keys.book(book.id), book);
+        patch(item.id, { status: 'done', book });
+        created.push(book);
+      } catch (err) {
+        patch(item.id, { status: 'error', error: err.message });
+      }
     }
+
+    setRunning(false);
+    queryClient.invalidateQueries({ queryKey: ['books'] });
+    queryClient.invalidateQueries({ queryKey: keys.tags });
+    if (single && created.length === 1) navigate(`/books/${created[0].id}`);
   };
 
-  const busy = progress !== null;
   return (
     <div className="narrow">
-      <h1 className="section-title">Upload a book</h1>
-      <p className="muted">
-        PDF, EPUB or TXT. The text is pulled out so the book can be read on screen and read aloud. Everyone in the library
-        can see books you upload.
-      </p>
+      <header className="page-header">
+        <h1 className="section-title">Upload books</h1>
+        <p className="muted">
+          PDF, EPUB or TXT, up to {MAX_MB} MB each, and up to {MAX_FILES} at a time. A-Read pulls out the text so every book can be
+          read on screen and read aloud. Everyone in the library can see your uploads.
+        </p>
+      </header>
 
       <form className="form upload-form" onSubmit={onSubmit}>
-        <FileDrop
-          accept={BOOK_TYPES}
-          file={file}
-          onFile={setFile}
-          label="Drop your book here or click to browse"
-          hint="PDF, EPUB or TXT"
-        />
-
-        <div className="form-grid">
-          <label className="field">
-            <span>Title</span>
-            <input name="title" maxLength={300} placeholder="Taken from the file if left empty" disabled={busy} />
-          </label>
-          <label className="field">
-            <span>Author</span>
-            <input name="author" maxLength={200} placeholder="Taken from the file if left empty" disabled={busy} />
-          </label>
-          <label className="field">
-            <span>Tags</span>
-            <input name="tags" maxLength={500} placeholder="fiction, classic, history" disabled={busy} />
-          </label>
-          <label className="field">
-            <span>Language</span>
-            <input name="language" maxLength={20} placeholder="e.g. en, fr, es" disabled={busy} />
-          </label>
-        </div>
-        <label className="field">
-          <span>Description</span>
-          <textarea name="description" rows={3} maxLength={5000} placeholder="Optional" disabled={busy} />
-        </label>
-
-        <div className="field">
-          <span>Cover image (optional)</span>
-          <FileDrop
-            accept="image/jpeg,image/png,image/webp,image/gif"
-            file={cover}
-            onFile={setCover}
-            icon={ImagePlus}
-            label="Add a cover"
-            hint="Without one, A-Read uses the PDF's first page, the EPUB's own cover, or a generated cover."
+        <div
+          className={`drop drop-large ${over ? 'drop-over' : ''}`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setOver(true);
+          }}
+          onDragLeave={() => setOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setOver(false);
+            if (!running) addFiles(e.dataTransfer.files);
+          }}
+        >
+          <input
+            ref={input}
+            type="file"
+            accept={BOOK_TYPES}
+            multiple
+            hidden
+            onChange={(e) => {
+              addFiles(e.target.files);
+              e.target.value = '';
+            }}
           />
+          <button type="button" className="drop-button" onClick={() => input.current?.click()} disabled={running}>
+            <span className="drop-icon">
+              <UploadCloud size={30} strokeWidth={1.6} aria-hidden="true" />
+            </span>
+            <strong>{items.length ? 'Add more books' : 'Drop books here or click to browse'}</strong>
+            <span className="muted">PDF · EPUB · TXT — select several files at once</span>
+          </button>
         </div>
+
+        {items.length > 0 && (
+          <ul className="upload-queue">
+            {items.map((item) => (
+              <li key={item.id} className={`upload-item upload-${item.status}`}>
+                <span className="upload-item-icon">
+                  {item.status === 'done' ? (
+                    <CheckCircle2 size={20} />
+                  ) : item.status === 'error' ? (
+                    <CircleAlert size={20} />
+                  ) : ['uploading', 'processing', 'preparing'].includes(item.status) ? (
+                    <LoaderCircle size={20} className="spin" />
+                  ) : (
+                    <FileText size={20} />
+                  )}
+                </span>
+                <div className="upload-item-body">
+                  <div className="upload-item-name">
+                    {item.book ? <Link to={`/books/${item.book.id}`}>{item.book.title}</Link> : item.file.name}
+                  </div>
+                  <div className="muted small">
+                    {formatBytes(item.file.size)} ·{' '}
+                    {
+                      {
+                        queued: 'Ready to upload',
+                        preparing: 'Making a cover…',
+                        uploading: `Uploading ${Math.round(item.progress * 100)}%`,
+                        processing: 'Extracting text and chapters…',
+                        done: 'Added to the library',
+                        error: item.error,
+                      }[item.status]
+                    }
+                  </div>
+                  {item.status === 'uploading' && <ProgressBar value={item.progress * 100} label={`Uploading ${item.file.name}`} />}
+                </div>
+                {!running && item.status !== 'done' && (
+                  <button
+                    type="button"
+                    className="icon-button"
+                    title="Remove"
+                    onClick={() => setItems((list) => list.filter((i) => i.id !== item.id))}
+                  >
+                    <X size={16} />
+                    <span className="sr-only">Remove {item.file.name}</span>
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <fieldset className="form-section" disabled={running}>
+          <legend>{single ? 'Book details' : 'Details for every book in this batch'}</legend>
+          {single ? (
+            <div className="form-grid">
+              <label className="field">
+                <span>Title</span>
+                <input name="title" maxLength={300} placeholder="Taken from the file if left empty" />
+              </label>
+              <label className="field">
+                <span>Author</span>
+                <input name="author" maxLength={200} placeholder="Taken from the file if left empty" />
+              </label>
+            </div>
+          ) : (
+            items.length > 1 && <p className="muted small">Titles and authors are read from each file. You can edit them afterwards.</p>
+          )}
+          <div className="form-grid">
+            <label className="field">
+              <span>Tags</span>
+              <input name="tags" maxLength={500} placeholder="fiction, classic, history" />
+            </label>
+            <label className="field">
+              <span>Language</span>
+              <input name="language" maxLength={20} placeholder="e.g. en, fr, sw" />
+            </label>
+          </div>
+          {single && (
+            <>
+              <label className="field">
+                <span>Description</span>
+                <textarea name="description" rows={3} maxLength={5000} placeholder="Optional" />
+              </label>
+              <div className="field">
+                <span>Cover image (optional)</span>
+                <FileDrop
+                  accept="image/jpeg,image/png,image/webp,image/gif"
+                  file={cover}
+                  onFile={setCover}
+                  icon={ImagePlus}
+                  label="Add a cover"
+                  hint="Otherwise A-Read uses the PDF's first page, the EPUB's own cover, or draws one."
+                />
+              </div>
+            </>
+          )}
+        </fieldset>
 
         <ErrorMessage error={error} />
 
-        {busy && (
-          <div className="upload-status">
-            {progress < 1 ? (
-              <>
-                <span>Uploading… {Math.round(progress * 100)}%</span>
-                <ProgressBar value={progress * 100} label="Upload progress" />
-              </>
-            ) : (
-              <Spinner label="Processing the book: extracting text and chapters…" />
-            )}
-          </div>
-        )}
-
-        <button className="button button-primary" disabled={busy || !file}>
-          {busy ? 'Working…' : 'Upload book'}
-        </button>
+        <div className="button-row">
+          {finished && !running ? (
+            <>
+              <Link to="/" className="button button-primary">
+                Go to the library
+              </Link>
+              <button type="button" className="button" onClick={() => setItems([])}>
+                <Plus size={16} aria-hidden="true" /> Upload more
+              </button>
+            </>
+          ) : (
+            <button className="button button-primary" disabled={running || !items.some((i) => i.status === 'queued' || i.status === 'error')}>
+              {running ? 'Uploading…' : items.length > 1 ? `Upload ${items.filter((i) => i.status !== 'done').length} books` : 'Upload book'}
+            </button>
+          )}
+        </div>
       </form>
     </div>
   );

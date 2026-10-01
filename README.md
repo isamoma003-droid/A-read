@@ -11,6 +11,9 @@ A shared book library where people upload books and then **read them on screen o
 - **Follow along**: the sentence being spoken is highlighted and kept in view (device voice and cloud narration).
 - **Pick up where you left off**: reading and listening position is saved per user, plus private bookmarks with notes.
 - **Library**: covers (from the PDF's first page, the EPUB's own cover, an upload, or generated), search, format/audio/tag filters, and sorting.
+- **Batch uploads** of up to 20 books at a time, up to 100 MB each, even on Cloudinary's free plan (large files are stored in parts).
+- **Share** any book to WhatsApp, Telegram, Facebook, X, email or a copied link, with a title-and-cover preview.
+- **Admin panel** (`/admin`): library stats, user management (promote/demote admins, delete accounts), and book moderation.
 
 Everyone with an account sees the whole library. Only the person who uploaded a book (or an admin) can edit it, delete it, or add audio.
 
@@ -70,10 +73,11 @@ cp frontend/.env.example frontend/.env   # optional, only needed in production
 | `CLOUDINARY_URL` | Cloudinary Dashboard → **API Keys** → copy the `cloudinary://…` environment variable |
 | `ADMIN_EMAILS` | Comma-separated emails that can edit or delete any book |
 | `CLIENT_ORIGIN` | The frontend URL(s) allowed by CORS (default `http://localhost:5173`) |
+| `FRONTEND_URL` | Optional. Where shared links send people (defaults to the first `CLIENT_ORIGIN`) |
 
 **Cloudinary setting you must change:** new Cloudinary accounts block PDF delivery by default. Open **Settings → Security** and turn on **"Allow delivery of PDF and ZIP files"**, or the PDF page view won't load.
 
-Cloudinary plans cap upload sizes. The free plan's limits are much lower for images, PDFs and raw files (EPUB/TXT) than for audio. Check your plan and set `MAX_BOOK_MB` / `MAX_AUDIO_MB` to match.
+Cloudinary plans cap the size of each stored file (free plan: 10 MB for PDFs and other raw files, 100 MB for audio). A-Read stores books larger than `CLOUDINARY_MAX_FILE_MB` as several parts, so `MAX_BOOK_MB` (default 100) can be higher than your plan's per-file limit. Audiobooks are stored as one file, so keep `MAX_AUDIO_MB` within your plan's video limit. If you're on a paid plan, raise `CLOUDINARY_MAX_FILE_MB` to store books in one piece.
 
 ### 4. (Optional) Enable Google Cloud narration
 
@@ -103,6 +107,8 @@ Open http://localhost:5173, create an account and upload a book.
 Each section is stored as a list of sentences (split with `Intl.Segmenter`) plus paragraph boundaries. The text view, the browser voice and cloud narration all share the same sentence numbering, which is what makes highlighting exact.
 
 **Cloud narration.** A background job turns each section into an MP3. The SSML puts a `<mark>` before every sentence, so Google returns each sentence's start time. Those times drive the highlight. Requests are chunked under Google's 5,000-byte limit and the audio is joined per section. Jobs survive a stop and can be **resumed** (sections already done with the same voice are skipped). If the server restarts mid-job, the book shows "Interrupted" and can be resumed.
+
+**Sharing.** Share links point at the API (`https://<api>/share/books/<id>`). That page carries Open Graph tags (title, author, cover), so WhatsApp and other apps show a preview, and then redirects to the book in the app. Visitors who aren't logged in are taken to it after logging in or signing up. On Render's free plan the first preview after the server sleeps can time out; sharing again works.
 
 **Reading position.** The reader saves the section, sentence, EPUB location and audiobook time (debounced, and again when the tab is hidden). The library's "Continue reading" row comes from this.
 
@@ -146,6 +152,8 @@ All endpoints except register/login need `Authorization: Bearer <token>`.
 | `GET / POST / DELETE /api/books/:id/narration` (`?purge=true` deletes audio) | Cloud narration status, start/resume, stop |
 | `GET /api/tts/status`, `GET /api/tts/voices?language=en` | Narration availability and voices |
 | `GET /api/progress`, `GET / PUT /api/progress/:bookId` | Continue reading; per-book position |
+| `GET /api/admin/stats`, `GET /api/admin/users?q=`, `PATCH / DELETE /api/admin/users/:id` | Admin only: stats, roles, account removal (`?deleteBooks=true`) |
+| `GET /share/books/:id` (public) | Link-preview page that redirects to the book |
 | `GET / POST /api/books/:id/bookmarks`, `PATCH / DELETE /api/bookmarks/:id` | Private bookmarks |
 
 ## Limitations

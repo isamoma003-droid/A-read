@@ -10,6 +10,11 @@ const assetSchema = new Schema(
     resourceType: { type: String, enum: ['image', 'video', 'raw'], required: true },
     bytes: Number,
     format: String,
+    // Set when a large file is stored in pieces; the reader joins them in order.
+    parts: {
+      type: [new Schema({ url: String, publicId: String, bytes: Number }, { _id: false })],
+      default: undefined,
+    },
   },
   { _id: false },
 );
