@@ -18,7 +18,8 @@ A shared book library where people upload books and then **read them on screen o
 - **Required reading**: admins assign books to everyone or to chosen readers, with a due date and a note (optionally emailed). Readers get a Required reading list; admins see who has finished.
 - **Accounts**: email sign-up with a confirmation link (sent through Brevo), or **Sign in with Google**.
 - **Public catalogue + SEO**: anyone, including search engines, can browse the library and book pages (`/sitemap.xml`, `/robots.txt`). Reading and listening need an account.
-- **Installable app (PWA)**: add it to the home screen on Android, iOS and desktop; the app shell works offline.
+- **Installable app (PWA)**: add it to the home screen on Android, iOS and desktop.
+- **Offline reading and listening**: **Download** a book on its page to keep its text, original file, cover, narration and audiobook on the device. Downloaded books open, read aloud (cloud narration or audiobook) and remember your place with no connection; progress syncs when you're back online. Manage them under **Downloads**. The browser's own device voice works offline only if the device has a voice installed locally.
 
 Only the person who uploaded a book (or an admin) can edit it, delete it, or add audio.
 

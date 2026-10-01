@@ -203,13 +203,24 @@ router.get('/:id/sections', async (req, res) => {
   });
 });
 
+const sectionJson = ({ _id, __v, book: _book, sentences, paragraphStarts, ...rest }) => ({
+  ...rest,
+  paragraphs: unpackParagraphs(sentences, paragraphStarts),
+});
+
+// Every section's full text in one response, used to save a book for offline reading.
+router.get('/:id/offline', signedIn, async (req, res) => {
+  const book = await findBook(req.params.id);
+  const sections = await Section.find({ book: book._id }).sort({ index: 1 }).lean();
+  res.json({ sections: sections.map(sectionJson) });
+});
+
 router.get('/:id/sections/:index', signedIn, async (req, res) => {
   const index = Number(req.params.index);
   if (!Number.isInteger(index) || index < 0) throw badRequest('Invalid section number');
   const section = await Section.findOne({ book: req.params.id, index }).lean();
   if (!section) throw notFound('Section not found');
-  const { _id, __v, book: _book, sentences, paragraphStarts, ...rest } = section;
-  res.json({ section: { ...rest, paragraphs: unpackParagraphs(sentences, paragraphStarts) } });
+  res.json({ section: sectionJson(section) });
 });
 
 // --- Audio ----------------------------------------------------------------------------------

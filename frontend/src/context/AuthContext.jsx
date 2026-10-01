@@ -1,34 +1,59 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api, onUnauthorized, tokenStore } from '../api/client.js';
+import { clearDownloads } from '../offline/store.js';
 
 const AuthContext = createContext(null);
+const USER_KEY = 'a-read-user';
+
+// The last signed-in user, so the app still knows who you are when it opens offline.
+function storedUser() {
+  try {
+    return JSON.parse(localStorage.getItem(USER_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+function storeUser(user) {
+  try {
+    if (user) localStorage.setItem(USER_KEY, JSON.stringify(user));
+    else localStorage.removeItem(USER_KEY);
+  } catch {
+    // ignore
+  }
+}
 
 export function AuthProvider({ children }) {
   const queryClient = useQueryClient();
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(Boolean(tokenStore.get()));
+  const [user, setUserState] = useState(() => (tokenStore.get() ? storedUser() : null));
+  const [loading, setLoading] = useState(() => Boolean(tokenStore.get()) && !storedUser());
+  const setUser = useCallback((next) => {
+    storeUser(next);
+    setUserState(next);
+  }, []);
 
   const logout = useCallback(() => {
     tokenStore.set(null);
     setUser(null);
     queryClient.clear();
-  }, [queryClient]);
+  }, [queryClient, setUser]);
 
   useEffect(() => {
     onUnauthorized(logout);
     if (!tokenStore.get()) return;
     api('/auth/me')
       .then((data) => setUser(data.user))
-      .catch(() => logout())
+      // Only a real "not signed in" answer logs you out; being offline keeps the saved session.
+      .catch((err) => err.status === 401 && logout())
       .finally(() => setLoading(false));
-  }, [logout]);
+  }, [logout, setUser]);
 
   const startSession = useCallback((data) => {
     tokenStore.set(data.token);
     setUser(data.user);
     return data.user;
-  }, []);
+  }, [setUser]);
 
   const value = useMemo(
     () => ({
@@ -42,7 +67,11 @@ export function AuthProvider({ children }) {
         ),
       loginWithGoogle: (credential) => api('/auth/google', { method: 'POST', body: { credential } }).then(startSession),
       verifyEmail: (token) => api('/auth/verify-email', { method: 'POST', body: { token } }).then(startSession),
-      logout,
+      // Explicit log out also clears this device's offline downloads.
+      logout: () => {
+        clearDownloads();
+        logout();
+      },
     }),
     [user, loading, logout, startSession],
   );

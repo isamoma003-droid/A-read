@@ -4,6 +4,9 @@ import { useEffect, useState } from 'react';
 import { useBooks, useContinueReading, useTags } from '../api/queries.js';
 import RequiredShelf from '../components/RequiredShelf.jsx';
 import { useDocumentTitle } from '../utils/useDocumentTitle.js';
+import { DownloadedList } from './DownloadsPage.jsx';
+import { useOnline } from '../offline/useOnline.js';
+import { useDownloads } from '../offline/store.js';
 import BookCard, { BookCardSkeleton } from '../components/BookCard.jsx';
 import { EmptyState, ErrorMessage, Spinner } from '../components/Feedback.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -39,6 +42,8 @@ function ContinueReading() {
 
 export default function LibraryPage() {
   const { user } = useAuth();
+  const online = useOnline();
+  const downloads = useDownloads();
   useDocumentTitle(null);
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState(params.get('q') || '');
@@ -98,6 +103,16 @@ export default function LibraryPage() {
         </label>
       </section>
 
+      {!online && (
+        <section className="panel offline-panel">
+          <h2 className="panel-title">Downloaded on this device</h2>
+          <DownloadedList compact />
+          <p className="muted small">
+            These open without a connection. Other books need you to be online
+            {Object.keys(downloads).length ? '.' : ': download books from their page while connected.'}
+          </p>
+        </section>
+      )}
       {!filtering && user && <RequiredShelf />}
       {!filtering && user && <ContinueReading />}
 
@@ -156,7 +171,7 @@ export default function LibraryPage() {
             ))}
           </div>
         )}
-        <ErrorMessage error={books.error} />
+        {online && <ErrorMessage error={books.error} />}
 
         {books.isSuccess && list.length === 0 && (
           filtering ? (

@@ -1,8 +1,9 @@
-import { BookOpen, ListChecks, LogOut, Moon, Shield, Sun, Upload } from 'lucide-react';
+import { BookOpen, CloudDownload, ListChecks, LogOut, Moon, Shield, Sun, Upload } from 'lucide-react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
 import InstallButton from './InstallButton.jsx';
+import OfflineBanner from './OfflineBanner.jsx';
 
 const THEME_ORDER = ['light', 'sepia', 'dark'];
 
@@ -10,7 +11,7 @@ export function ThemeToggle() {
   const { update, theme: current } = useSettings();
   const next = THEME_ORDER[(THEME_ORDER.indexOf(current) + 1) % THEME_ORDER.length];
   return (
-    <button type="button" className="icon-button" onClick={() => update({ theme: next })} title={`Switch to ${next} theme`}>
+    <button type="button" className="icon-button theme-toggle" onClick={() => update({ theme: next })} title={`Switch to ${next} theme`}>
       {current === 'dark' ? <Moon size={18} /> : <Sun size={18} />}
       <span className="sr-only">Switch to {next} theme</span>
     </button>
@@ -38,6 +39,9 @@ export default function Layout() {
               <>
                 <NavLink to="/required" title="Required reading">
                   <ListChecks size={16} aria-hidden="true" /> <span className="hide-mobile">Required</span>
+                </NavLink>
+                <NavLink to="/downloads" title="Downloaded books (offline)">
+                  <CloudDownload size={16} aria-hidden="true" /> <span className="hide-mobile">Downloads</span>
                 </NavLink>
                 {user.role === 'admin' && (
                   <NavLink to="/admin" title="Admin panel">
@@ -72,6 +76,7 @@ export default function Layout() {
           </nav>
         </div>
       </header>
+      <OfflineBanner />
       <main className="page">
         <Outlet />
       </main>

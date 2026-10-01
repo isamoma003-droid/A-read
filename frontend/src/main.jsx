@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App.jsx';
+import { flushPendingProgress } from './offline/progressQueue.js';
 import { AuthProvider } from './context/AuthContext.jsx';
 import { SettingsProvider } from './context/SettingsContext.jsx';
 import './styles/global.css';
@@ -11,9 +12,12 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30 * 1000,
+      // Always try the request (the service worker may answer it from a downloaded book).
+      networkMode: 'offlineFirst',
       refetchOnWindowFocus: false,
       retry: (count, error) => error?.status >= 500 && count < 2,
     },
+    mutations: { networkMode: 'offlineFirst' },
   },
 });
 
@@ -30,6 +34,10 @@ createRoot(document.getElementById('root')).render(
     </QueryClientProvider>
   </StrictMode>,
 );
+
+// Send reading progress saved while offline.
+flushPendingProgress();
+window.addEventListener('online', () => flushPendingProgress());
 
 // Installable app + offline app shell (production only; the dev server serves live modules).
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {

@@ -18,11 +18,14 @@ export function useBrowserVoices() {
 }
 
 // The saved voice if it exists, otherwise the best-sounding voice for the book's language.
-export function pickVoice(voices, voiceURI, language) {
+// Offline, only voices installed on the device (localService) can speak.
+export function pickVoice(voices, voiceURI, language, { offline = false } = {}) {
+  const usable = offline ? voices.filter((v) => v.localService) : voices;
   if (voiceURI) {
-    const saved = voices.find((v) => v.voiceURI === voiceURI);
+    const saved = usable.find((v) => v.voiceURI === voiceURI);
     if (saved) return saved;
   }
+  voices = usable;
   const lang = (language || navigator.language || 'en').slice(0, 2).toLowerCase();
   const matches = voices.filter((v) => v.lang?.toLowerCase().startsWith(lang));
   return (

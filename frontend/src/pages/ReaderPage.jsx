@@ -2,7 +2,6 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { ArrowLeft, Bookmark, List, Settings } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { api } from '../api/client.js';
 import { keys, sectionQuery, useBook, useProgress, useSection, useSections } from '../api/queries.js';
 import { ErrorMessage, PageLoader, Spinner } from '../components/Feedback.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
@@ -12,6 +11,8 @@ import TextView from '../reader/TextView.jsx';
 import { useAudiobookPlayer, useNarrationPlayer } from '../reader/useAudio.js';
 import { pickVoice, useBrowserVoices, useSpeechPlayer } from '../reader/useSpeech.js';
 import { useLatest } from '../utils/useLatest.js';
+import { saveProgress } from '../offline/progressQueue.js';
+import { useOnline } from '../offline/useOnline.js';
 
 // Page views are only needed for PDF/EPUB, so their libraries load on demand.
 const PdfView = lazy(() => import('../reader/PdfView.jsx'));
@@ -132,9 +133,10 @@ function Reader({ book, sections, saved, requestedSection, listen }) {
   const onSentence = useCallback((i) => setPosition((p) => (p.sentence === i ? p : { ...p, sentence: i })), []);
 
   const browserVoices = useBrowserVoices();
+  const online = useOnline();
   const voice = useMemo(
-    () => pickVoice(browserVoices, settings.voiceURI, book.language),
-    [browserVoices, settings.voiceURI, book.language],
+    () => pickVoice(browserVoices, settings.voiceURI, book.language, { offline: !online }),
+    [browserVoices, settings.voiceURI, book.language, online],
   );
   const speech = useSpeechPlayer({ sentences, rate: settings.rate, voice, onSentence, onEnd: advanceSection });
   const narration = useNarrationPlayer({ narration: section?.narration, rate: settings.rate, onSentence, onEnd: advanceSection });
@@ -268,7 +270,7 @@ function Reader({ book, sections, saved, requestedSection, listen }) {
     if (!body) return;
     pending.current = null;
     queryClient.setQueryData(keys.progress(book.id), (old) => ({ ...(old || {}), ...body }));
-    api(`/progress/${book.id}`, { method: 'PUT', body, keepalive: true }).catch(() => {});
+    saveProgress(book.id, body, { keepalive: true });
   }, [book.id, queryClient]);
 
   const audiobookBucket = Math.floor(audiobook.time / 5);

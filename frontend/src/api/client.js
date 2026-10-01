@@ -1,4 +1,4 @@
-const API_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+export const API_URL = new URL((import.meta.env.VITE_API_URL || '/api').replace(/\/$/, ''), window.location.origin).href;
 const TOKEN_KEY = 'a-read-token';
 
 
@@ -33,7 +33,7 @@ export function onUnauthorized(handler) {
   unauthorizedHandler = handler;
 }
 
-function authHeaders() {
+export function authHeaders() {
   const token = tokenStore.get();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }

@@ -126,6 +126,10 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     const section = await api(`/books/${txtBook.id}/sections/0`, { token: bob });
     assert.deepEqual(section.body.section.paragraphs, [['It was a dark night.', 'Rain fell.']]);
     assert.equal((await api(`/books/${txtBook.id}/sections/9`, { token: bob })).status, 404);
+    const offline = await api(`/books/${txtBook.id}/offline`, { token: bob });
+    assert.equal(offline.body.sections.length, 2);
+    assert.deepEqual(offline.body.sections[0], section.body.section);
+    assert.equal((await api(`/books/${txtBook.id}/offline`)).status, 401);
   });
 
   test('rejects unsupported and broken files', async () => {
