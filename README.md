@@ -110,7 +110,7 @@ The reader enters their phone number, gets the M-Pesa PIN prompt (STK Push), and
 
 1. In the Hub dashboard, open **Platforms → Add platform**. Choose the till and set the webhook URL to `https://<this API>/api/payments/hub-webhook`. Copy the **API key** and **webhook secret** it shows once.
 2. On A-Read's backend host, set:
-   - `ISA_HUB_URL`: the Hub API's address, e.g. `https://isa-tech-hub-api.onrender.com`
+   - `ISA_HUB_URL`: the Hub API's address, e.g. `https://isa-tech-hub.onrender.com`
    - `ISA_HUB_API_KEY`: `isa_sk_…`
    - `ISA_HUB_WEBHOOK_SECRET`: `whsec_…`
 
