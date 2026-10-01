@@ -9,7 +9,7 @@ import { optionalAuth, requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { Payment } from '../models/Payment.js';
 import { Promotion } from '../models/Promotion.js';
-import { applyHubPayment, hub, hubConfig, hubEnabled, verifyHubWebhook } from '../services/hub.js';
+import { applyHubPayment, hub, hubConfig, hubEnabled, hubStatus, verifyHubWebhook } from '../services/hub.js';
 import { mpesaEnabled, normalizePhone, parseCallback, resultMessage, stkPush, stkQuery } from '../services/mpesa.js';
 import { HttpError, badRequest, notFound } from '../utils/httpError.js';
 
@@ -44,7 +44,8 @@ router.get('/config', async (_req, res) => {
     try {
       ({ till } = await hubConfig());
     } catch (err) {
-      console.warn(`ISA Tech Hub config unavailable: ${err.message}`);
+      // Readers then see "not set up yet"; Admin → Payments shows the reason in plain words.
+      console.warn(`ISA Tech Hub config unavailable (HTTP ${err.status ?? 'none'}): ${err.message}`);
     }
     return res.json({
       enabled: Boolean(till?.active),
@@ -249,6 +250,17 @@ router.get('/', requireAuth, requireAdmin, validate(listSchema, 'query'), async 
       thisMonth: thisMonth[0]?.amount || 0,
       byPurpose: Object.fromEntries(totals.map((t) => [t._id, { amount: t.amount, count: t.count }])),
     },
+  });
+});
+
+// What Admin → Payments shows under "Payment setup": which way payments go, and if they can't, why.
+router.get('/setup', requireAuth, requireAdmin, async (req, res) => {
+  const hubState = await hubStatus();
+  res.json({
+    mode: hubEnabled() ? 'hub' : mpesaEnabled() ? 'daraja' : 'off',
+    hub: { ...hubState, partial: hubState.missing.length > 0 && hubState.missing.length < 3 },
+    // The address to enter as this platform's webhook URL in the Hub dashboard.
+    webhookUrl: `${req.protocol}://${req.get('host')}/api/payments/hub-webhook`,
   });
 });
 

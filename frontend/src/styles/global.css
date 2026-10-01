@@ -2591,6 +2591,34 @@ input[type='range'] {
   color: var(--danger);
 }
 
+.payment-setup {
+  border-left: 4px solid var(--danger);
+}
+
+.payment-setup.setup-ok {
+  border-left-color: var(--accent);
+}
+
+.payment-setup.setup-info {
+  border-left-color: var(--text-muted);
+}
+
+.payment-setup-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.payment-setup p {
+  margin: 6px 0 0;
+}
+
+.payment-setup code {
+  word-break: break-all;
+}
+
 .payments-filter {
   max-width: 220px;
   margin-bottom: 12px;

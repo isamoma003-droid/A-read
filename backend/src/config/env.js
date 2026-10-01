@@ -63,7 +63,8 @@ export const env = {
   // payments go through the Hub (its dashboard issues the API key and webhook secret) and the
   // Daraja settings below are only used to settle payments started before the switch.
   hub: {
-    url: (process.env.ISA_HUB_URL || '').replace(/\/$/, ''),
+    // Just the Hub API's address. A pasted /api or /v1 on the end is dropped: the client adds /v1 itself.
+    url: (process.env.ISA_HUB_URL || '').trim().replace(/\/+$/, '').replace(/\/(api|v1)$/i, ''),
     apiKey: process.env.ISA_HUB_API_KEY || '',
     webhookSecret: process.env.ISA_HUB_WEBHOOK_SECRET || '',
   },
