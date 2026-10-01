@@ -14,6 +14,7 @@ A shared book library where people upload books and then **read them on screen o
 - **Batch uploads** of up to 20 books at a time, up to 100 MB each, even on Cloudinary's free plan (large files are stored in parts).
 - **Share** any book to WhatsApp, Telegram, Facebook, X, email or a copied link, with a title-and-cover preview.
 - **Admin panel** (`/admin`): library stats, user management (promote/demote admins, delete accounts), and book moderation.
+- **Support popups + M-Pesa**: admins schedule a "support us" popup (start and end time, optional daily hours, audience, how often each reader sees it, and whether it closes itself after N seconds). It sits in a corner and never blocks reading. The **Support** page (`/support`) takes M-Pesa payments by STK Push to your till, and admins see every payment and the total raised per popup.
 
 - **Required reading**: admins assign books to everyone or to chosen readers, with a due date and a note (optionally emailed). Readers get a Required reading list; admins see who has finished.
 - **Accounts**: email sign-up with a confirmation link (sent through Brevo), or **Sign in with Google**.
@@ -98,7 +99,20 @@ Without this, everything else still works. Readers use their device voice, and t
 - **Brevo**: create an API key (SMTP & API → API Keys) and verify a sender address. Set `BREVO_API_KEY` and `EMAIL_FROM` (plus `EMAIL_FROM_NAME`). New email accounts must then click the confirmation link before they can sign in. Without these settings, accounts are active right away.
 - **Google**: in the Google Cloud console create an OAuth client ID of type *Web application*. Add your frontend URLs (e.g. `https://a-read.vercel.app`, `http://localhost:5173`) as **Authorized JavaScript origins**, and set `GOOGLE_CLIENT_ID` on the backend. The "Continue with Google" button appears automatically.
 
-### 6. Run it
+### 6. (Optional) M-Pesa payments and support popups
+
+A-Read uses Safaricom's **Daraja** API (Lipa na M-Pesa Online, also called STK Push). The reader enters their phone number, gets the M-Pesa PIN prompt, and the page confirms once they've paid.
+
+1. On [developer.safaricom.co.ke](https://developer.safaricom.co.ke/) create an app with **M-Pesa Express** and note its Consumer Key and Secret.
+2. **Sandbox first:** set `MPESA_ENV=sandbox`, `MPESA_SHORTCODE=174379` and the sandbox passkey from the M-Pesa Express simulator. Leave `MPESA_TILL_NUMBER` empty (the sandbox short code is a Paybill).
+3. **Go live** with your till: Safaricom gives you production keys and a passkey. Set `MPESA_ENV=production`, `MPESA_TILL_NUMBER` to the till customers pay, and `MPESA_SHORTCODE` to its **store (head office) number**, which is the number the passkey belongs to. With a Paybill instead, leave the till empty and put the Paybill in `MPESA_SHORTCODE`.
+4. Set `MPESA_CALLBACK_BASE_URL` to the API's public **HTTPS** address and `MPESA_CALLBACK_SECRET` to a long random string. Safaricom posts each result to `/api/payments/mpesa/callback/<secret>`. It can't reach `localhost`, so for local testing use a tunnel such as `ngrok http 5000`. If a callback gets lost, the payment page asks Daraja for the status itself after 20 seconds.
+
+Until all of these are set, the Support page only shows the till number (when `MPESA_TILL_NUMBER` is set) for paying from the M-Pesa menu. Payments made that way aren't recorded in A-Read.
+
+Admins create popups under **Admin → Popups** (with a live preview) and see payments under **Admin → Payments**. Each payment records a **purpose**: `donation` by default, or a name set on the popup (e.g. `premium`). To unlock a paid feature later, check `await Payment.hasPaid(userId, 'premium', minAmount)` on the backend. The purpose always comes from the admin's popup, never from the browser.
+
+### 7. Run it
 
 ```bash
 npm run dev:backend    # API on http://localhost:5000
@@ -136,7 +150,7 @@ npm test     # unit tests: text splitting, PDF/EPUB/TXT extraction, SSML chunkin
 MONGODB_URI_TEST=mongodb://127.0.0.1:27017/a-read-test npm test   # also runs the API tests
 ```
 
-The API tests drive the real Express app against a real database, with Cloudinary and Google stubbed out. They cover auth, uploads of all three formats, search and filters, permissions, progress, bookmarks, audiobooks, narration jobs and deletion. **Use a throwaway database:** the tests drop it.
+The API tests drive the real Express app against a real database, with Cloudinary and Google stubbed out. They cover auth, uploads of all three formats, search and filters, permissions, progress, bookmarks, audiobooks, narration jobs, deletion, support popups and M-Pesa payments (Daraja is stubbed too). **Use a throwaway database:** the tests drop it.
 
 ```bash
 npm run lint   # frontend ESLint (React hooks rules)
@@ -172,6 +186,11 @@ All endpoints except register/login need `Authorization: Bearer <token>`.
 | `GET /api/admin/stats`, `GET /api/admin/users?q=`, `PATCH / DELETE /api/admin/users/:id` | Admin only: stats, roles, account removal (`?deleteBooks=true`) |
 | `GET /share/books/:id` (public) | Link-preview page that redirects to the book |
 | `GET / POST /api/books/:id/bookmarks`, `PATCH / DELETE /api/bookmarks/:id` | Private bookmarks |
+| `GET /api/promotions/active` (public) | The support popup to show this visitor now, if any |
+| `GET / POST /api/promotions`, `PATCH / DELETE /api/promotions/:id` | Admin only: schedule, edit, pause and delete popups |
+| `GET /api/payments/config` (public), `POST /api/payments/stk` (public), `GET /api/payments/:id` (public) | M-Pesa settings, start an STK Push, poll its status |
+| `POST /api/payments/mpesa/callback/:secret` | Safaricom's result callback |
+| `GET /api/payments?status=` | Admin only: payments and totals |
 
 ## Limitations
 

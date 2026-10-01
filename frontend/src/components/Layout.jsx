@@ -1,9 +1,10 @@
-import { BookOpen, ListChecks, LogOut, Moon, Shield, Sun, Upload } from 'lucide-react';
+import { BookOpen, Heart, ListChecks, LogOut, Moon, Shield, Sun, Upload } from 'lucide-react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
 import InstallButton from './InstallButton.jsx';
 import OfflineBanner from './OfflineBanner.jsx';
+import PromotionPopup from './PromotionPopup.jsx';
 
 const THEME_ORDER = ['light', 'sepia', 'dark'];
 
@@ -34,6 +35,9 @@ export default function Layout() {
           <nav className="topnav">
             <NavLink to="/" end className="nav-library">
               Library
+            </NavLink>
+            <NavLink to="/support" title="Support A-Read">
+              <Heart size={16} aria-hidden="true" /> <span className="hide-mobile">Support</span>
             </NavLink>
             {user ? (
               <>
@@ -77,6 +81,7 @@ export default function Layout() {
       <main className="page">
         <Outlet />
       </main>
+      <PromotionPopup />
     </div>
   );
 }
