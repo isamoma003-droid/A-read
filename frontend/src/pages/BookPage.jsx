@@ -228,6 +228,10 @@ function NarrationPanel({ book }) {
 
   const percent = narration.totalSections ? (narration.completedSections / narration.totalSections) * 100 : 0;
 
+  // Google narration is paid and optional. Without it, readers use their device's free voice,
+  // so the panel only appears for books that already have narration.
+  if (!tts?.enabled && narration.status === 'none') return null;
+
   return (
     <section className="panel">
       <h2 className="panel-title">
@@ -271,7 +275,6 @@ function NarrationPanel({ book }) {
 
       {!running && book.canEdit && (
         <>
-          {!tts?.enabled && <p className="notice small">Cloud narration isn't set up on this server (see README: Google Cloud TTS).</p>}
           {canGenerate && (
             <div className="stack-sm">
               <label className="field">
