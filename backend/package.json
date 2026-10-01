@@ -1,0 +1,41 @@
+{
+  "name": "a-read-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A-Read API: Express + MongoDB + Cloudinary",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js",
+    "lint": "eslint ."
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "@google-cloud/text-to-speech": "^7.1.1",
+    "bcryptjs": "^3.0.3",
+    "cloudinary": "^2.11.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "fast-xml-parser": "^5.11.2",
+    "helmet": "^8.3.0",
+    "html-to-text": "^10.0.1",
+    "jsonwebtoken": "^9.0.3",
+    "jszip": "^3.10.2",
+    "mongoose": "^9.10.3",
+    "morgan": "^1.12.1",
+    "multer": "^2.4.0",
+    "music-metadata": "^11.16.1",
+    "pdfjs-dist": "^6.3.289",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.11.0",
+    "globals": "^17.13.0"
+  }
+}
