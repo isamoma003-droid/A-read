@@ -152,6 +152,9 @@ export const usePayment = (id) =>
     refetchInterval: (query) => (query.state.data?.status === 'pending' || !query.state.data ? 3000 : false),
   });
 
+export const usePaymentSetup = () =>
+  useQuery({ queryKey: ['admin', 'payments', 'setup'], queryFn: () => api('/payments/setup'), staleTime: 0, retry: false });
+
 export const useAdminPayments = (status) =>
   useQuery({
     queryKey: keys.adminPayments(status),

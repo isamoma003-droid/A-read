@@ -32,6 +32,37 @@ export const clearHubConfig = () => {
   cachedConfig = null;
 };
 
+const HUB_SETTINGS = [
+  ['ISA_HUB_URL', 'url'],
+  ['ISA_HUB_API_KEY', 'apiKey'],
+  ['ISA_HUB_WEBHOOK_SECRET', 'webhookSecret'],
+];
+
+// Turns a failed call to the Hub into what to do about it.
+function explain(err) {
+  if (err.status === 401) return 'The Hub rejected ISA_HUB_API_KEY. Copy the key again from the Hub dashboard (or issue a new one there), then redeploy.';
+  if (err.status === 403) return 'The Hub has disabled this platform. Enable it on its page in the Hub dashboard.';
+  if (err.status === 404) return `Nothing answered at ${env.hub.url}/v1/config. ISA_HUB_URL should be just the Hub API's address, e.g. https://isa-tech-hub.onrender.com`;
+  if (!err.status) return `Couldn't reach ${env.hub.url} (${err.message}). Check ISA_HUB_URL and that the Hub is running.`;
+  return `The Hub answered HTTP ${err.status}: ${err.message}`;
+}
+
+/**
+ * Is the Hub set up, and does it answer? Asks it fresh (and refreshes the cached till).
+ * @returns {Promise<{ configured: boolean, missing: string[], reachable?: boolean, error?: string, platform?: object, till?: object }>}
+ */
+export async function hubStatus() {
+  const missing = HUB_SETTINGS.filter(([, key]) => !env.hub[key]).map(([name]) => name);
+  if (missing.length) return { configured: false, missing };
+  try {
+    const value = await hub().config();
+    cachedConfig = { value, expiresAt: Date.now() + 10 * 60_000 };
+    return { configured: true, missing, reachable: true, platform: value.platform ?? null, till: value.till ?? null };
+  } catch (err) {
+    return { configured: true, missing, reachable: false, error: explain(err) };
+  }
+}
+
 export const verifyHubWebhook = (rawBody, signature) =>
   verifyWebhook({ secret: env.hub.webhookSecret, rawBody: rawBody ?? '', signature });
 

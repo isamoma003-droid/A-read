@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { CalendarDays, Coins, Receipt } from 'lucide-react';
-import { useAdminPayments } from '../api/queries.js';
+import { CalendarDays, CircleAlert, CircleCheck, Coins, Info, Receipt } from 'lucide-react';
+import { useAdminPayments, usePaymentSetup } from '../api/queries.js';
 import { ErrorMessage, Spinner } from '../components/Feedback.jsx';
 import { formatKes, formatNumber, timeAgo } from '../utils/format.js';
 
@@ -9,12 +9,72 @@ const STATUS_LABELS = { paid: 'Paid', pending: 'Waiting', failed: 'Failed', disp
 // 254712345678 → 0712 345 678
 const formatPhone = (phone) => (phone ? `0${phone.slice(3, 6)} ${phone.slice(6, 9)} ${phone.slice(9)}` : '—');
 
+const HUB_VARS = 'ISA_HUB_URL, ISA_HUB_API_KEY and ISA_HUB_WEBHOOK_SECRET';
+
+// Says whether readers can pay right now and, if not, exactly what to fix.
+function PaymentSetup() {
+  const { data, error, isPending, isFetching, refetch } = usePaymentSetup();
+  if (isPending) return null;
+  if (error) return <ErrorMessage error={error} />;
+  const { mode, hub, webhookUrl } = data;
+
+  let tone = 'error';
+  let title;
+  let body;
+  if (mode === 'hub' && hub.reachable) {
+    tone = 'ok';
+    title = 'Connected to ISA Tech Hub';
+    body = (
+      <>
+        Payments go through the Hub as <strong>{hub.platform?.name || 'this platform'}</strong>. Customers pay{' '}
+        {hub.till?.kind === 'paybill' ? 'Paybill' : 'till'} <strong>{hub.till?.payNumber}</strong>
+        {hub.till?.environment === 'sandbox' && ' (sandbox: test money only)'}.
+        {hub.till && !hub.till.active && ' The till is switched off in the Hub, so readers can’t pay right now.'}
+      </>
+    );
+  } else if (mode === 'hub') {
+    title = 'A-Read can’t use ISA Tech Hub';
+    body = hub.error;
+  } else if (hub.partial) {
+    title = 'ISA Tech Hub is only partly set up';
+    body = `Missing on the backend: ${hub.missing.join(', ')}. Add ${hub.missing.length === 1 ? 'it' : 'them'} and redeploy.`;
+  } else if (mode === 'daraja') {
+    tone = 'info';
+    title = 'Payments go straight to Safaricom';
+    body = `A-Read is using its own MPESA_* settings. To use ISA Tech Hub instead, set ${HUB_VARS} on the backend and redeploy.`;
+  } else {
+    title = 'M-Pesa payments are off';
+    body = `Readers see “M-Pesa payments aren’t set up yet”. In the Hub dashboard add A-Read under Platforms → Add platform, then set ${HUB_VARS} on the backend and redeploy.`;
+  }
+  const Icon = tone === 'ok' ? CircleCheck : tone === 'info' ? Info : CircleAlert;
+
+  return (
+    <section className={`panel payment-setup setup-${tone}`} aria-live="polite">
+      <div className="payment-setup-head">
+        <h2 className="panel-title">
+          <Icon size={18} aria-hidden="true" /> {title}
+        </h2>
+        <button type="button" className="button button-small button-ghost" onClick={() => refetch()} disabled={isFetching}>
+          {isFetching ? 'Checking…' : 'Check again'}
+        </button>
+      </div>
+      <p>{body}</p>
+      {mode !== 'daraja' && (
+        <p className="muted small">
+          Webhook URL for A-Read in the Hub dashboard: <code>{webhookUrl}</code>
+        </p>
+      )}
+    </section>
+  );
+}
+
 export default function AdminPayments() {
   const [status, setStatus] = useState('');
   const { data, isPending, error } = useAdminPayments(status || undefined);
 
   return (
     <div className="stack">
+      <PaymentSetup />
       {data && (
         <div className="stat-grid">
           <div className="stat">

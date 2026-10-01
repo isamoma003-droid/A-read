@@ -721,7 +721,10 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
         if (req.headers.authorization !== 'Bearer isa_sk_test') return send(401, { error: 'Invalid API key' });
         if (hubDown) return send(503, { error: 'Unavailable' });
         if (req.method === 'GET' && req.url === '/v1/config') {
-          return send(200, { till: { kind: 'till', payNumber: '5557777', accountNumber: null, environment: 'production', active: true } });
+          return send(200, {
+            platform: { id: 'p1', name: 'A-Read', slug: 'a-read' },
+            till: { kind: 'till', payNumber: '5557777', accountNumber: null, environment: 'production', active: true },
+          });
         }
         if (req.method === 'POST' && req.url === '/v1/payments') {
           const body = JSON.parse(raw);
@@ -737,6 +740,12 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
       });
     });
     await new Promise((resolve) => fakeHub.listen(0, '127.0.0.1', resolve));
+
+    // Before the Hub is set up, Admin → Payments says so (this test server uses direct Daraja).
+    let setup = await api('/payments/setup', { token: alice });
+    assert.equal(setup.body.mode, 'daraja');
+    assert.deepEqual(setup.body.hub.missing, ['ISA_HUB_URL', 'ISA_HUB_API_KEY', 'ISA_HUB_WEBHOOK_SECRET']);
+    assert.equal((await api('/payments/setup', { token: carol })).status, 403);
 
     const saved = { ...env.hub };
     Object.assign(env.hub, { url: `http://127.0.0.1:${fakeHub.address().port}`, apiKey: 'isa_sk_test', webhookSecret: 'whsec_test' });
@@ -756,6 +765,22 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     };
 
     try {
+      setup = await api('/payments/setup', { token: alice });
+      assert.equal(setup.body.mode, 'hub');
+      assert.equal(setup.body.hub.reachable, true);
+      assert.equal(setup.body.hub.platform.name, 'A-Read');
+      assert.equal(setup.body.hub.till.payNumber, '5557777');
+      assert.match(setup.body.webhookUrl, /^http:\/\/127\.0\.0\.1:\d+\/api\/payments\/hub-webhook$/);
+
+      // A wrong key is explained in plain words.
+      env.hub.apiKey = 'isa_sk_wrong';
+      setHubClient(null);
+      setup = await api('/payments/setup', { token: alice });
+      assert.equal(setup.body.hub.reachable, false);
+      assert.match(setup.body.hub.error, /rejected ISA_HUB_API_KEY/);
+      env.hub.apiKey = 'isa_sk_test';
+      setHubClient(null);
+
       // The till to pay from the M-Pesa menu now comes from the Hub.
       let res = await api('/payments/config');
       assert.deepEqual(res.body, { enabled: true, method: 'till', number: '5557777', accountReference: null, minAmount: 10, maxAmount: 150000 });
@@ -825,6 +850,8 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
       res = await api('/payments/stk', { method: 'POST', body: { phone: '0711 888 999', amount: 50 } });
       assert.equal(res.status, 502);
       assert.match(res.body.error, /couldn't reach M-Pesa/);
+      setup = await api('/payments/setup', { token: alice });
+      assert.match(setup.body.hub.error, /HTTP 503/);
     } finally {
       Object.assign(env.hub, saved);
       setHubClient(null);
