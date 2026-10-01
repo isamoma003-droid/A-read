@@ -92,7 +92,7 @@ Cloudinary plans cap the size of each stored file (free plan: 10 MB for PDFs and
 2. Create a **service account**, then add a **JSON key** and download it, e.g. to `backend/service-account.json`. That filename is git-ignored, so never commit the key.
 3. In `backend/.env`, set `GOOGLE_APPLICATION_CREDENTIALS=./service-account.json`. Optionally also set `GOOGLE_TTS_DEFAULT_VOICE` (e.g. `en-US-Neural2-F`) and the `NARRATION_MAX_CHARS` cost guard.
 
-Without this, everything else still works. Readers use their device voice, and the narration panel explains that cloud narration isn't set up.
+Without this, everything else still works. Readers listen with their device's built-in voice, which is free, and the cloud narration panel is hidden.
 
 ### 5. (Optional) Email confirmation and Google sign-in
 
