@@ -5,7 +5,7 @@ import { Book } from '../models/Book.js';
 import { Section, unpackParagraphs } from '../models/Section.js';
 import { badRequest, conflict } from '../utils/httpError.js';
 import { applyTimepoints, buildSsmlChunks, fillMissingMarks } from './ssml.js';
-import { bookFolder, uploadBuffer } from './storage.js';
+import { bookFolder, errorMessage, uploadBuffer } from './storage.js';
 import { cloudinary } from '../config/cloudinary.js';
 
 // Only these voice families accept SSML <mark> tags (Chirp and Journey voices do not).
@@ -170,7 +170,7 @@ export async function deleteNarration(book) {
   await stopNarration(book._id);
   await cloudinary.api
     .delete_resources_by_prefix(`${bookFolder(book._id)}/narration/`, { resource_type: 'video' })
-    .catch((err) => console.warn('Could not delete narration audio:', err.message || err));
+    .catch((err) => console.warn(`Could not delete narration audio: ${errorMessage(err)}`));
   await Section.updateMany({ book: book._id }, { $unset: { narration: 1 } });
   book.narration = { status: 'none' };
   await book.save();

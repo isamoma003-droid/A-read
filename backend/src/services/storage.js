@@ -16,10 +16,13 @@ function toAsset(result, resourceType) {
   };
 }
 
+// Cloudinary errors carry the full request (including the API secret), so only log the message.
+const errorMessage = (err) => err?.error?.message || err?.message || String(err);
+
 function callbackPromise(start) {
   return new Promise((resolve, reject) => {
     start((error, result) => {
-      if (error) reject(new Error(`Cloudinary upload failed: ${error.message || error}`));
+      if (error) reject(new Error(`Cloudinary upload failed: ${errorMessage(error)}`));
       else resolve(result);
     });
   });
@@ -53,7 +56,7 @@ export async function destroyAsset(asset) {
   try {
     await cloudinary.uploader.destroy(asset.publicId, { resource_type: asset.resourceType || 'image', invalidate: true });
   } catch (err) {
-    console.warn(`Could not delete Cloudinary asset ${asset.publicId}:`, err.message || err);
+    console.warn(`Could not delete Cloudinary asset ${asset.publicId}: ${errorMessage(err)}`);
   }
 }
 
@@ -64,7 +67,7 @@ export async function deleteBookFolder(bookId) {
     try {
       await cloudinary.api.delete_resources_by_prefix(prefix, { resource_type: resourceType });
     } catch (err) {
-      console.warn(`Could not delete Cloudinary ${resourceType} files under ${prefix}:`, err.message || err);
+      console.warn(`Could not delete Cloudinary ${resourceType} files under ${prefix}: ${errorMessage(err)}`);
     }
   }
   await cloudinary.api.delete_folder(bookFolder(bookId)).catch(() => {});
@@ -82,5 +85,7 @@ export function pdfCoverUrl(publicId) {
     secure: true,
   });
 }
+
+export { errorMessage };
 
 export const COVER_TRANSFORMATION = [{ width: 800, height: 1200, crop: 'limit', quality: 'auto' }];
