@@ -24,7 +24,15 @@ export function createApp() {
   app.set('trust proxy', 1);
   app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }));
   app.use(cors({ origin: env.clientOrigins }));
-  app.use(express.json({ limit: '1mb' }));
+  app.use(
+    express.json({
+      limit: '1mb',
+      // ISA Tech Hub signs the exact bytes it sends, so keep them for that one route.
+      verify: (req, _res, buf) => {
+        if (req.originalUrl.split('?')[0] === '/api/payments/hub-webhook') req.rawBody = buf;
+      },
+    }),
+  );
   if (env.nodeEnv !== 'test') app.use(morgan(env.nodeEnv === 'production' ? 'combined' : 'dev'));
 
   app.get('/api/health', (_req, res) => res.json({ ok: true }));

@@ -10,4 +10,9 @@ export default [
       'no-unused-vars': ['error', { varsIgnorePattern: '^_', argsIgnorePattern: '^_' }],
     },
   },
+  // The ISA Tech Hub client (src/services/isa-hub.cjs) is CommonJS, copied as-is from the Hub repo.
+  {
+    files: ['**/*.cjs'],
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'commonjs', globals: globals.node },
+  },
 ];

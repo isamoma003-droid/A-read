@@ -4,6 +4,7 @@ const { Schema } = mongoose;
 
 // One M-Pesa payment attempt. `purpose` says what it was for: "donation" today; other values
 // (e.g. "premium") can later unlock features for `user` once `status` is "paid".
+// `provider` says who talked to Safaricom: ISA Tech Hub ("hub") or A-Read itself ("daraja").
 const paymentSchema = new Schema(
   {
     user: { type: Schema.Types.ObjectId, ref: 'User', index: true },
@@ -11,7 +12,11 @@ const paymentSchema = new Schema(
     purpose: { type: String, trim: true, maxlength: 40, default: 'donation' },
     phone: { type: String, required: true },
     amount: { type: Number, required: true, min: 1 },
-    status: { type: String, enum: ['pending', 'paid', 'failed'], default: 'pending', index: true },
+    // disputed: M-Pesa reported a different amount (Hub payments only); an admin looks at it.
+    status: { type: String, enum: ['pending', 'paid', 'failed', 'disputed'], default: 'pending', index: true },
+    provider: { type: String, enum: ['daraja', 'hub'], default: 'daraja' },
+    // The payment's id at ISA Tech Hub.
+    hubPaymentId: { type: String, unique: true, sparse: true },
     checkoutRequestId: { type: String, unique: true, sparse: true },
     merchantRequestId: String,
     receipt: { type: String, unique: true, sparse: true },

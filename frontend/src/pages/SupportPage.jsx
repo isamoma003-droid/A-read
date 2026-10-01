@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CircleCheck, CircleX, Heart, Smartphone } from 'lucide-react';
+import { CircleAlert, CircleCheck, CircleX, Heart, Smartphone } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { usePayment, usePaymentConfig } from '../api/queries.js';
@@ -133,6 +133,16 @@ function PaymentStatus({ id, onRetry }) {
         <CircleCheck size={40} strokeWidth={1.5} aria-hidden="true" />
         <h2>Thank you!</h2>
         <p>We received {formatKes(payment.amount)}.</p>
+        {payment.receipt && <p className="muted small">M-Pesa receipt {payment.receipt}</p>}
+      </section>
+    );
+  }
+  if (payment.status === 'disputed') {
+    return (
+      <section className="panel payment-status payment-disputed" aria-live="polite">
+        <CircleAlert size={40} strokeWidth={1.5} aria-hidden="true" />
+        <h2>We're checking this payment</h2>
+        <p>{payment.message}</p>
         {payment.receipt && <p className="muted small">M-Pesa receipt {payment.receipt}</p>}
       </section>
     );

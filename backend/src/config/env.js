@@ -59,7 +59,16 @@ export const env = {
   googleClientId: process.env.GOOGLE_CLIENT_ID || '',
   // Daily popup hours are read in this time zone.
   timeZone: process.env.TIME_ZONE || 'Africa/Nairobi',
-  // M-Pesa (Safaricom Daraja) STK Push to a Buy Goods till or a Paybill.
+  // ISA Tech Hub: one M-Pesa till shared by all ISA platforms. When all three are set, new
+  // payments go through the Hub (its dashboard issues the API key and webhook secret) and the
+  // Daraja settings below are only used to settle payments started before the switch.
+  hub: {
+    url: (process.env.ISA_HUB_URL || '').replace(/\/$/, ''),
+    apiKey: process.env.ISA_HUB_API_KEY || '',
+    webhookSecret: process.env.ISA_HUB_WEBHOOK_SECRET || '',
+  },
+  // M-Pesa (Safaricom Daraja) STK Push to a Buy Goods till or a Paybill, used directly when the
+  // Hub isn't configured. MPESA_MIN_AMOUNT / MPESA_MAX_AMOUNT apply either way.
   mpesa: {
     environment: process.env.MPESA_ENV === 'production' ? 'production' : 'sandbox',
     consumerKey: process.env.MPESA_CONSUMER_KEY || '',
