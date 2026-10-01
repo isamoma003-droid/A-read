@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api, onUnauthorized, tokenStore } from '../api/client.js';
-import { clearDownloads } from '../offline/store.js';
+import { clearOfflineBooks } from '../offline/store.js';
 
 const AuthContext = createContext(null);
 const USER_KEY = 'a-read-user';
@@ -67,9 +67,9 @@ export function AuthProvider({ children }) {
         ),
       loginWithGoogle: (credential) => api('/auth/google', { method: 'POST', body: { credential } }).then(startSession),
       verifyEmail: (token) => api('/auth/verify-email', { method: 'POST', body: { token } }).then(startSession),
-      // Explicit log out also clears this device's offline downloads.
+      // Explicit log out also forgets the books kept for offline reading on this device.
       logout: () => {
-        clearDownloads();
+        clearOfflineBooks();
         logout();
       },
     }),

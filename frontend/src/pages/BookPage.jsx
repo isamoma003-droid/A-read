@@ -14,7 +14,6 @@ import {
 } from '../api/queries.js';
 import BookCover from '../components/BookCover.jsx';
 import ShareButton from '../components/ShareButton.jsx';
-import DownloadButton from '../components/DownloadButton.jsx';
 import FileDrop from '../components/FileDrop.jsx';
 import { ErrorMessage, PageLoader, ProgressBar, Spinner } from '../components/Feedback.jsx';
 import NotFoundPage from './NotFoundPage.jsx';
@@ -103,7 +102,6 @@ export default function BookPage() {
                   </Link>
                 )}
                 <FinishedButton book={book} />
-                <DownloadButton book={book} />
               </>
             ) : (
               <Link to="/login" state={{ from: `/books/${book.id}` }} className="button button-primary">

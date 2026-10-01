@@ -1,10 +1,15 @@
 import { useSyncExternalStore } from 'react';
 import { API_URL, authHeaders } from '../api/client.js';
 
-// Downloaded books live in this Cache Storage bucket. The service worker (public/sw.js) answers
-// requests from it whenever the network is unavailable, so the normal reader works offline.
+// Books the reader has opened are kept in this Cache Storage bucket, private to the app (not a
+// file the user can see or share). The service worker (public/sw.js) answers requests from it
+// whenever the network is unavailable, so recently read books keep working offline.
 export const OFFLINE_CACHE = 'a-read-offline-v1';
 const INDEX_KEY = 'a-read-offline-index';
+// How many recently opened books stay available offline, and the largest original file
+// (PDF/EPUB) saved automatically. Text and narration are always saved.
+const MAX_BOOKS = 10;
+const MAX_AUTO_FILE_BYTES = 30 * 1024 * 1024;
 
 export const offlineSupported = typeof window !== 'undefined' && 'caches' in window && 'serviceWorker' in navigator;
 
@@ -36,8 +41,8 @@ function subscribe(fn) {
   return () => listeners.delete(fn);
 }
 
-export const useDownloads = () => useSyncExternalStore(subscribe, () => index);
-export const getDownload = (bookId) => index[bookId] || null;
+// Books currently available offline (most recently opened first is up to the caller).
+export const useOfflineBooks = () => useSyncExternalStore(subscribe, () => index);
 
 // --- Downloading ------------------------------------------------------------------------------
 
@@ -63,11 +68,11 @@ async function prefetchReaderCode(format) {
 }
 
 /**
- * Saves everything needed to read and listen to a book offline: details, table of contents,
- * every section's text, progress, bookmarks, the original file (all parts), cover, narration
- * audio and the audiobook. Calls onProgress({ done, total }) as files finish.
+ * Saves what's needed to read and listen to a book offline: details, table of contents, every
+ * section's text, progress, bookmarks, cover and narration audio, plus the original file (all
+ * parts) when includeFile and the audiobook when includeAudiobook.
  */
-export async function downloadBook(book, { onProgress } = {}) {
+async function saveBook(book, { includeFile, includeAudiobook, onProgress } = {}) {
   if (!offlineSupported) throw new Error('This browser cannot save books for offline use');
   navigator.storage?.persist?.().catch(() => {});
   const cache = await caches.open(OFFLINE_CACHE);
@@ -95,10 +100,12 @@ export async function downloadBook(book, { onProgress } = {}) {
   for (const section of sections) jsonUrls[apiUrl(`/books/${book.id}/sections/${section.index}`)] = { section };
 
   const apiGets = [`/progress/${book.id}`, `/books/${book.id}/bookmarks`, `/books/${book.id}/narration`, '/auth/me'].map(apiUrl);
+  const bookFile = full.file?.parts?.length ? full.file.parts.map((p) => p.url) : full.file?.url ? [full.file.url] : [];
+  const fileIncluded = includeFile ?? (full.file?.bytes || 0) <= MAX_AUTO_FILE_BYTES;
   const files = [
-    ...(full.file?.parts?.length ? full.file.parts.map((p) => p.url) : full.file?.url ? [full.file.url] : []),
+    ...(fileIncluded ? bookFile : []),
     full.cover?.url,
-    full.audiobook?.url,
+    includeAudiobook ? full.audiobook?.url : null,
     ...sections.map((s) => s.narration?.url),
   ].filter(Boolean);
 
@@ -155,19 +162,51 @@ export async function downloadBook(book, { onProgress } = {}) {
       format: full.format,
       cover: full.cover,
       hasNarration: sections.some((s) => s.narration?.url),
-      hasAudiobook: Boolean(full.audiobook?.url),
+      hasAudiobook: Boolean(includeAudiobook && full.audiobook?.url),
+      hasFile: fileIncluded && bookFile.length > 0,
+      bookUpdatedAt: full.updatedAt,
       bytes,
       urls,
       savedAt: new Date().toISOString(),
+      openedAt: new Date().toISOString(),
     },
   });
+  await evictOldest();
 }
 
-export async function removeDownload(bookId) {
+const inFlight = new Map();
+
+/**
+ * Called when a book is opened (and when its audiobook is played). Quietly keeps the book
+ * available offline, refreshing it if it changed, and forgets the least recently opened
+ * books beyond MAX_BOOKS. Never throws.
+ */
+export function keepBookOffline(book, { audiobook = false } = {}) {
+  if (!offlineSupported || !navigator.onLine || !book?.id) return Promise.resolve();
+  const saved = index[book.id];
+  const upToDate = saved && saved.bookUpdatedAt === book.updatedAt && (!audiobook || saved.hasAudiobook || !book.audiobook);
+  if (upToDate) {
+    writeIndex({ ...index, [book.id]: { ...saved, openedAt: new Date().toISOString() } });
+    return Promise.resolve();
+  }
+  if (inFlight.has(book.id)) return inFlight.get(book.id);
+  const job = saveBook(book, { includeAudiobook: audiobook || Boolean(saved?.hasAudiobook) })
+    .catch(() => {})
+    .finally(() => inFlight.delete(book.id));
+  inFlight.set(book.id, job);
+  return job;
+}
+
+async function evictOldest() {
+  const entries = Object.values(index).sort((a, b) => (b.openedAt || b.savedAt).localeCompare(a.openedAt || a.savedAt));
+  for (const entry of entries.slice(MAX_BOOKS)) await forgetBook(entry.id);
+}
+
+async function forgetBook(bookId) {
   const entry = index[bookId];
   if (!entry) return;
   const cache = await caches.open(OFFLINE_CACHE);
-  // Keep shared entries (e.g. /auth/me) if another download still lists them.
+  // Keep shared entries (e.g. /auth/me) if another saved book still lists them.
   const stillUsed = new Set(Object.values(index).filter((e) => e.id !== bookId).flatMap((e) => e.urls));
   await Promise.all(entry.urls.filter((url) => !stillUsed.has(url)).map((url) => cache.delete(url)));
   const { [bookId]: _removed, ...rest } = index;
@@ -184,17 +223,10 @@ export async function updateOfflineProgress(bookId, progress) {
   if (!index[bookId].urls.includes(url)) writeIndex({ ...index, [bookId]: { ...index[bookId], urls: [...index[bookId].urls, url] } });
 }
 
-export async function storageEstimate() {
-  try {
-    return await navigator.storage.estimate();
-  } catch {
-    return null;
-  }
-}
 
-// Removes every downloaded book from this device (used on log out, so the next person on a
-// shared device doesn't inherit them).
-export async function clearDownloads() {
+// Forgets every saved book (used on log out, so the next person on a shared device doesn't
+// inherit them).
+export async function clearOfflineBooks() {
   writeIndex({});
   try {
     localStorage.removeItem('a-read-pending-progress');

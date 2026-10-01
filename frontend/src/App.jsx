@@ -8,7 +8,6 @@ import LibraryPage from './pages/LibraryPage.jsx';
 import { LoginPage, RegisterPage, VerifyEmailPage } from './pages/AuthPages.jsx';
 import NotFoundPage from './pages/NotFoundPage.jsx';
 import { PageLoader } from './components/Feedback.jsx';
-import DownloadsPage from './pages/DownloadsPage.jsx';
 import RequiredPage from './pages/RequiredPage.jsx';
 import UploadPage from './pages/UploadPage.jsx';
 
@@ -29,7 +28,6 @@ export default function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/upload" element={<UploadPage />} />
           <Route path="/required" element={<RequiredPage />} />
-          <Route path="/downloads" element={<DownloadsPage />} />
           <Route path="/admin" element={<AdminPage />} />
         </Route>
         <Route path="*" element={<NotFoundPage />} />

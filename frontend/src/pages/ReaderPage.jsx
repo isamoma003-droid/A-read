@@ -12,6 +12,7 @@ import { useAudiobookPlayer, useNarrationPlayer } from '../reader/useAudio.js';
 import { pickVoice, useBrowserVoices, useSpeechPlayer } from '../reader/useSpeech.js';
 import { useLatest } from '../utils/useLatest.js';
 import { saveProgress } from '../offline/progressQueue.js';
+import { keepBookOffline } from '../offline/store.js';
 import { useOnline } from '../offline/useOnline.js';
 
 // Page views are only needed for PDF/EPUB, so their libraries load on demand.
@@ -249,6 +250,14 @@ function Reader({ book, sections, saved, requestedSection, listen }) {
       jump({ sectionIndex: s, sentenceIndex: target });
     }
   };
+
+  // Opening a book keeps it available offline inside the app; playing its audiobook adds that too.
+  useEffect(() => {
+    keepBookOffline(book);
+  }, [book]);
+  useEffect(() => {
+    if (mode === 'audiobook' && audiobook.playing) keepBookOffline(book, { audiobook: true });
+  }, [book, mode, audiobook.playing]);
 
   // --- Progress -----------------------------------------------------------------------------
   const percent = useMemo(() => {

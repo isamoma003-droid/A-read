@@ -1,4 +1,4 @@
-import { BookOpen, CloudDownload, ListChecks, LogOut, Moon, Shield, Sun, Upload } from 'lucide-react';
+import { BookOpen, ListChecks, LogOut, Moon, Shield, Sun, Upload } from 'lucide-react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
@@ -39,9 +39,6 @@ export default function Layout() {
               <>
                 <NavLink to="/required" title="Required reading">
                   <ListChecks size={16} aria-hidden="true" /> <span className="hide-mobile">Required</span>
-                </NavLink>
-                <NavLink to="/downloads" title="Downloaded books (offline)">
-                  <CloudDownload size={16} aria-hidden="true" /> <span className="hide-mobile">Downloads</span>
                 </NavLink>
                 {user.role === 'admin' && (
                   <NavLink to="/admin" title="Admin panel">
