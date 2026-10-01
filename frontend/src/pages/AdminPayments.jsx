@@ -4,7 +4,7 @@ import { useAdminPayments } from '../api/queries.js';
 import { ErrorMessage, Spinner } from '../components/Feedback.jsx';
 import { formatKes, formatNumber, timeAgo } from '../utils/format.js';
 
-const STATUS_LABELS = { paid: 'Paid', pending: 'Waiting', failed: 'Failed' };
+const STATUS_LABELS = { paid: 'Paid', pending: 'Waiting', failed: 'Failed', disputed: 'Under review' };
 
 // 254712345678 → 0712 345 678
 const formatPhone = (phone) => (phone ? `0${phone.slice(3, 6)} ${phone.slice(6, 9)} ${phone.slice(9)}` : '—');
@@ -53,6 +53,7 @@ export default function AdminPayments() {
             <option value="paid">Paid</option>
             <option value="pending">Waiting</option>
             <option value="failed">Failed</option>
+            <option value="disputed">Under review</option>
           </select>
         </label>
         <ErrorMessage error={error} />

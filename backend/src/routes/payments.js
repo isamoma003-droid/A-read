@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
+import mongoose from 'mongoose';
 import { z } from 'zod';
 import { env } from '../config/env.js';
 import { requireAdmin } from '../middleware/admin.js';
@@ -8,6 +9,7 @@ import { optionalAuth, requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { Payment } from '../models/Payment.js';
 import { Promotion } from '../models/Promotion.js';
+import { applyHubPayment, hub, hubConfig, hubEnabled, verifyHubWebhook } from '../services/hub.js';
 import { mpesaEnabled, normalizePhone, parseCallback, resultMessage, stkPush, stkQuery } from '../services/mpesa.js';
 import { HttpError, badRequest, notFound } from '../utils/httpError.js';
 
@@ -23,22 +25,42 @@ const stkLimiter = rateLimit({
   skip: () => env.nodeEnv === 'test',
 });
 
-// How long to wait for Safaricom's callback before asking Daraja ourselves, and how often.
+// Direct Daraja: how long to wait for Safaricom's callback before asking Daraja ourselves, and how often.
 const QUERY_AFTER_MS = 20_000;
 const QUERY_EVERY_MS = 10_000;
-// After this, a payment with no answer at all counts as failed (a late callback still settles it).
+// After this, a direct payment with no answer at all counts as failed (a late callback still settles it).
 const GIVE_UP_MS = 5 * 60 * 1000;
+// Through the Hub: the Hub pushes the result by webhook; while the payer's page waits we also ask
+// it this often (it checks with Safaricom itself when the callback is late).
+const HUB_CHECK_EVERY_MS = 5_000;
 
-router.get('/config', (_req, res) => {
+const unavailable = () => new HttpError(502, "We couldn't reach M-Pesa. Please try again in a moment.");
+
+router.get('/config', async (_req, res) => {
   const c = env.mpesa;
+  const limits = { minAmount: c.minAmount, maxAmount: c.maxAmount };
+  if (hubEnabled()) {
+    let till = null;
+    try {
+      ({ till } = await hubConfig());
+    } catch (err) {
+      console.warn(`ISA Tech Hub config unavailable: ${err.message}`);
+    }
+    return res.json({
+      enabled: Boolean(till?.active),
+      method: till?.kind ?? null,
+      number: till?.payNumber ?? null,
+      accountReference: till?.accountNumber ?? null,
+      ...limits,
+    });
+  }
   res.json({
     enabled: mpesaEnabled(),
     // For paying by hand from the M-Pesa menu.
     method: c.tillNumber ? 'till' : c.shortcode ? 'paybill' : null,
     number: c.tillNumber || c.shortcode || null,
     accountReference: c.tillNumber ? null : c.accountReference,
-    minAmount: c.minAmount,
-    maxAmount: c.maxAmount,
+    ...limits,
   });
 });
 
@@ -47,7 +69,14 @@ const publicPayment = (p) => ({
   status: p.status,
   amount: p.amount,
   receipt: p.receipt || null,
-  message: p.status === 'pending' ? null : resultMessage(p.resultCode, p.resultDesc),
+  message:
+    p.status === 'pending'
+      ? null
+      : p.status === 'disputed'
+        ? 'M-Pesa reported a different amount. We will check it, so there is no need to pay again.'
+        : p.provider === 'hub'
+          ? p.resultDesc || resultMessage(p.resultCode)
+          : resultMessage(p.resultCode, p.resultDesc),
 });
 
 function settle(payment, { resultCode, resultDesc, receipt, amount }) {
@@ -73,9 +102,52 @@ const stkSchema = z.object({
   promotionId: z.string().regex(/^[a-f0-9]{24}$/i).nullable().optional(),
 });
 
+// Asks ISA Tech Hub to send the prompt for `payment`. A-Read's own payment id is the Hub reference
+// and the idempotency key, so a retried request can never prompt the payer twice.
+async function startThroughHub(payment, promotion) {
+  try {
+    const { payment: remote } = await hub().createPayment({
+      phone: payment.phone,
+      amount: payment.amount,
+      reference: payment.id,
+      purpose: payment.purpose,
+      description: 'Support A-Read',
+      idempotencyKey: payment.id,
+      metadata: { promotion: promotion?.id ?? null, reader: payment.user ? 'signed-in' : 'guest' },
+    });
+    applyHubPayment(payment, remote);
+    await payment.save();
+  } catch (err) {
+    payment.status = 'failed';
+    payment.resultDesc = err.message;
+    if (err.payment?.id) payment.hubPaymentId = err.payment.id;
+    await payment.save();
+    if (err.status === 409) throw new HttpError(429, 'A payment request was just sent to this phone. Check it, or try again in a minute.');
+    if (err.status === 400) throw badRequest(err.message);
+    console.warn(`ISA Tech Hub refused or couldn't be reached for payment ${payment.id}: ${err.message}`);
+    throw unavailable();
+  }
+}
+
+async function startThroughDaraja(payment) {
+  try {
+    const result = await stkPush({ phone: payment.phone, amount: payment.amount, description: 'Support A-Read' });
+    payment.checkoutRequestId = result.checkoutRequestId;
+    payment.merchantRequestId = result.merchantRequestId;
+    await payment.save();
+  } catch (err) {
+    payment.status = 'failed';
+    payment.resultDesc = err.message;
+    await payment.save();
+    console.warn(`M-Pesa STK push failed: ${err.message}`);
+    throw unavailable();
+  }
+}
+
 // Starts a payment: Safaricom sends the "enter your M-Pesa PIN" prompt to the phone.
 router.post('/stk', stkLimiter, optionalAuth, validate(stkSchema), async (req, res) => {
-  if (!mpesaEnabled()) throw new HttpError(503, 'M-Pesa payments are not set up yet');
+  const viaHub = hubEnabled();
+  if (!viaHub && !mpesaEnabled()) throw new HttpError(503, 'M-Pesa payments are not set up yet');
   const { amount, promotionId } = req.valid.body;
   const phone = normalizePhone(req.valid.body.phone);
   if (!phone) throw badRequest('Enter a Safaricom number like 0712 345 678');
@@ -92,24 +164,39 @@ router.post('/stk', stkLimiter, optionalAuth, validate(stkSchema), async (req, r
     purpose: promotion?.purpose || 'donation',
     phone,
     amount,
+    provider: viaHub ? 'hub' : 'daraja',
   });
 
-  try {
-    const result = await stkPush({ phone, amount, description: 'Support A-Read' });
-    payment.checkoutRequestId = result.checkoutRequestId;
-    payment.merchantRequestId = result.merchantRequestId;
-    await payment.save();
-  } catch (err) {
-    payment.status = 'failed';
-    payment.resultDesc = err.message;
-    await payment.save();
-    console.warn(`M-Pesa STK push failed: ${err.message}`);
-    throw new HttpError(502, "We couldn't reach M-Pesa. Please try again in a moment.");
-  }
+  if (viaHub) await startThroughHub(payment, promotion);
+  else await startThroughDaraja(payment);
   res.status(201).json({ payment: publicPayment(payment) });
 });
 
-// Safaricom posts the outcome here. The secret in the path keeps strangers from faking results.
+// ISA Tech Hub posts payment.paid / payment.failed / payment.disputed here, signed with the
+// webhook secret from the Hub dashboard. Register https://<this API>/api/payments/hub-webhook there.
+router.post('/hub-webhook', async (req, res) => {
+  if (!hubEnabled()) throw notFound();
+  let event;
+  try {
+    event = verifyHubWebhook(req.rawBody, req.get('isa-signature'));
+  } catch {
+    throw new HttpError(400, 'Invalid ISA Tech Hub signature');
+  }
+
+  const remote = event.data?.payment;
+  if (remote?.id) {
+    const payment =
+      (await Payment.findOne({ hubPaymentId: remote.id })) ||
+      (mongoose.isValidObjectId(remote.reference) ? await Payment.findOne({ _id: remote.reference, provider: 'hub' }) : null);
+    if (!payment) console.warn(`ISA Tech Hub ${event.type} for unknown payment ${remote.id} (reference ${remote.reference})`);
+    else if (applyHubPayment(payment, remote)) await payment.save();
+  }
+  // Anything signed and understood is acknowledged, including `ping` from the dashboard's test button.
+  res.status(204).end();
+});
+
+// Safaricom posts the outcome here (direct Daraja only). The secret in the path keeps strangers
+// from faking results.
 router.post('/mpesa/callback/:secret', async (req, res) => {
   const expected = Buffer.from(env.mpesa.callbackSecret || '');
   const given = Buffer.from(req.params.secret || '');
@@ -136,7 +223,7 @@ router.post('/mpesa/callback/:secret', async (req, res) => {
 // (Registered before /:id so "/" isn't taken for an id.)
 
 const listSchema = z.object({
-  status: z.enum(['pending', 'paid', 'failed']).optional(),
+  status: z.enum(['pending', 'paid', 'failed', 'disputed']).optional(),
   purpose: z.string().trim().max(40).optional(),
 });
 
@@ -165,26 +252,46 @@ router.get('/', requireAuth, requireAdmin, validate(listSchema, 'query'), async 
   });
 });
 
-// The payer's page polls this. If Safaricom's callback is slow or lost, ask Daraja directly.
+const due = (payment, everyMs) => !payment.checkedAt || Date.now() - payment.checkedAt.getTime() > everyMs;
+
+// Hub payments: ask the Hub (it checks with Safaricom itself when the callback is late).
+async function refreshFromHub(payment) {
+  if (!payment.hubPaymentId || !hubEnabled() || !due(payment, HUB_CHECK_EVERY_MS)) return;
+  payment.checkedAt = new Date();
+  try {
+    const { payment: remote } = await hub().getPayment(payment.hubPaymentId);
+    applyHubPayment(payment, remote);
+  } catch (err) {
+    console.warn(`ISA Tech Hub status check for ${payment.id} failed: ${err.message}`);
+  }
+  await payment.save();
+}
+
+// Direct payments: if Safaricom's callback is slow or lost, ask Daraja directly.
+async function refreshFromDaraja(payment) {
+  const age = Date.now() - payment.createdAt.getTime();
+  if (!payment.checkoutRequestId || age <= QUERY_AFTER_MS || !due(payment, QUERY_EVERY_MS) || !mpesaEnabled()) return;
+  payment.checkedAt = new Date();
+  try {
+    const result = await stkQuery(payment.checkoutRequestId);
+    if (result) settle(payment, result);
+  } catch (err) {
+    console.warn(`M-Pesa status check for ${payment.id} failed: ${err.message}`);
+  }
+  if (payment.status === 'pending' && age > GIVE_UP_MS) {
+    payment.status = 'failed';
+    payment.resultDesc = 'No answer from M-Pesa';
+  }
+  await payment.save();
+}
+
+// The payer's page polls this.
 router.get('/:id', async (req, res) => {
   const payment = await Payment.findById(req.params.id);
   if (!payment) throw notFound('Payment not found');
-
-  const age = Date.now() - payment.createdAt.getTime();
-  const due = !payment.checkedAt || Date.now() - payment.checkedAt.getTime() > QUERY_EVERY_MS;
-  if (payment.status === 'pending' && payment.checkoutRequestId && age > QUERY_AFTER_MS && due && mpesaEnabled()) {
-    payment.checkedAt = new Date();
-    try {
-      const result = await stkQuery(payment.checkoutRequestId);
-      if (result) settle(payment, result);
-    } catch (err) {
-      console.warn(`M-Pesa status check for ${payment.id} failed: ${err.message}`);
-    }
-    if (payment.status === 'pending' && age > GIVE_UP_MS) {
-      payment.status = 'failed';
-      payment.resultDesc = 'No answer from M-Pesa';
-    }
-    await payment.save();
+  if (payment.status === 'pending') {
+    if (payment.provider === 'hub') await refreshFromHub(payment);
+    else await refreshFromDaraja(payment);
   }
   res.json({ payment: publicPayment(payment) });
 });

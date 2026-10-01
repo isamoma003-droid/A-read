@@ -101,7 +101,26 @@ Without this, everything else still works. Readers use their device voice, and t
 
 ### 6. (Optional) M-Pesa payments and support popups
 
-A-Read uses Safaricom's **Daraja** API (Lipa na M-Pesa Online, also called STK Push). The reader enters their phone number, gets the M-Pesa PIN prompt, and the page confirms once they've paid.
+The reader enters their phone number, gets the M-Pesa PIN prompt (STK Push), and the page confirms once they've paid. A-Read can send the prompt in two ways:
+
+- **Through ISA Tech Hub (recommended).** The Hub is the one service that holds the ISA till's Daraja keys. It sends the prompt, settles the result with Safaricom, and tells A-Read by signed webhook. A-Read needs no Daraja settings at all.
+- **Directly with Daraja**, using A-Read's own `MPESA_*` settings (below). This is how it worked before the Hub, and it's what A-Read falls back to when the three `ISA_HUB_*` settings aren't all set.
+
+**Connect A-Read to ISA Tech Hub**
+
+1. In the Hub dashboard, open **Platforms → Add platform**. Choose the till and set the webhook URL to `https://<this API>/api/payments/hub-webhook`. Copy the **API key** and **webhook secret** it shows once.
+2. On A-Read's backend host, set:
+   - `ISA_HUB_URL`: the Hub API's address, e.g. `https://isa-tech-hub-api.onrender.com`
+   - `ISA_HUB_API_KEY`: `isa_sk_…`
+   - `ISA_HUB_WEBHOOK_SECRET`: `whsec_…`
+
+   Then redeploy. New payments now go through the Hub. Payments already in progress with Daraja still settle the old way.
+3. In the Hub, press **Send test webhook** on A-Read's platform page (A-Read must answer 2xx), then make a KES 10 payment on `/support`. It shows up in both A-Read's **Admin → Payments** and the Hub's **Payments**.
+4. Once a day has passed with no direct payments left pending, remove A-Read's `MPESA_*` keys (keep `MPESA_MIN_AMOUNT` / `MPESA_MAX_AMOUNT`, which set A-Read's own limits).
+
+A-Read keeps its own record of each payment (`provider: "hub"`, plus the Hub's payment id), so `Payment.hasPaid` and the per-popup totals work exactly as before. A payment the Hub holds as **disputed** (M-Pesa reported a different amount) shows as *Under review* in Admin → Payments, and the payer is told not to pay again.
+
+**Or connect Daraja directly**
 
 1. On [developer.safaricom.co.ke](https://developer.safaricom.co.ke/) create an app with **M-Pesa Express** and note its Consumer Key and Secret.
 2. **Sandbox first:** set `MPESA_ENV=sandbox`, `MPESA_SHORTCODE=174379` and the sandbox passkey from the M-Pesa Express simulator. Leave `MPESA_TILL_NUMBER` empty (the sandbox short code is a Paybill).
@@ -150,7 +169,7 @@ npm test     # unit tests: text splitting, PDF/EPUB/TXT extraction, SSML chunkin
 MONGODB_URI_TEST=mongodb://127.0.0.1:27017/a-read-test npm test   # also runs the API tests
 ```
 
-The API tests drive the real Express app against a real database, with Cloudinary and Google stubbed out. They cover auth, uploads of all three formats, search and filters, permissions, progress, bookmarks, audiobooks, narration jobs, deletion, support popups and M-Pesa payments (Daraja is stubbed too). **Use a throwaway database:** the tests drop it.
+The API tests drive the real Express app against a real database, with Cloudinary and Google stubbed out. They cover auth, uploads of all three formats, search and filters, permissions, progress, bookmarks, audiobooks, narration jobs, deletion, support popups and M-Pesa payments, both direct (Daraja is stubbed) and through ISA Tech Hub (a stand-in Hub server). **Use a throwaway database:** the tests drop it.
 
 ```bash
 npm run lint   # frontend ESLint (React hooks rules)
@@ -189,7 +208,8 @@ All endpoints except register/login need `Authorization: Bearer <token>`.
 | `GET /api/promotions/active` (public) | The support popup to show this visitor now, if any |
 | `GET / POST /api/promotions`, `PATCH / DELETE /api/promotions/:id` | Admin only: schedule, edit, pause and delete popups |
 | `GET /api/payments/config` (public), `POST /api/payments/stk` (public), `GET /api/payments/:id` (public) | M-Pesa settings, start an STK Push, poll its status |
-| `POST /api/payments/mpesa/callback/:secret` | Safaricom's result callback |
+| `POST /api/payments/hub-webhook` | ISA Tech Hub's signed webhook (`ISA-Signature` header) |
+| `POST /api/payments/mpesa/callback/:secret` | Safaricom's result callback (direct Daraja only) |
 | `GET /api/payments?status=` | Admin only: payments and totals |
 
 ## Limitations

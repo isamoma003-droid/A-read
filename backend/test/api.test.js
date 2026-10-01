@@ -17,6 +17,8 @@ Object.assign(process.env, {
 });
 
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import http from 'node:http';
 import { after, before, describe, test } from 'node:test';
 import mongoose from 'mongoose';
 import { makeEpub, makePdf } from './helpers.js';
@@ -696,5 +698,141 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal((await api('/payments?status=failed', { token: alice })).body.payments.length, 2);
     assert.equal((await api('/promotions', { token: alice })).body.promotions.find((p) => p.id === promo.id).raised, 150);
     setMpesaTransport(null);
+  });
+
+  test('with ISA Tech Hub configured, payments go through the Hub and settle by signed webhook', async () => {
+    const { env } = await import('../src/config/env.js');
+    const { Payment } = await import('../src/models/Payment.js');
+    const { clearHubConfig, setHubClient } = await import('../src/services/hub.js');
+
+    // A stand-in for the Hub's /v1 API.
+    const hubPayments = new Map();
+    const received = [];
+    let nextId = 0;
+    let hubDown = false;
+    const fakeHub = http.createServer((req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => (raw += chunk));
+      req.on('end', () => {
+        const send = (status, body) => {
+          res.writeHead(status, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(body));
+        };
+        if (req.headers.authorization !== 'Bearer isa_sk_test') return send(401, { error: 'Invalid API key' });
+        if (hubDown) return send(503, { error: 'Unavailable' });
+        if (req.method === 'GET' && req.url === '/v1/config') {
+          return send(200, { till: { kind: 'till', payNumber: '5557777', accountNumber: null, environment: 'production', active: true } });
+        }
+        if (req.method === 'POST' && req.url === '/v1/payments') {
+          const body = JSON.parse(raw);
+          received.push({ body, idempotencyKey: req.headers['idempotency-key'] });
+          if (body.phone === '254799000999') return send(409, { error: 'A payment request was just sent to this phone.' });
+          const payment = { id: `hub_${++nextId}`, reference: body.reference, amount: body.amount, status: 'pending', receipt: null, message: 'Waiting' };
+          hubPayments.set(payment.id, payment);
+          return send(201, { payment, replayed: false });
+        }
+        const match = /^\/v1\/payments\/(.+)$/.exec(req.url);
+        if (req.method === 'GET' && match && hubPayments.has(match[1])) return send(200, { payment: hubPayments.get(match[1]) });
+        send(404, { error: 'Not found' });
+      });
+    });
+    await new Promise((resolve) => fakeHub.listen(0, '127.0.0.1', resolve));
+
+    const saved = { ...env.hub };
+    Object.assign(env.hub, { url: `http://127.0.0.1:${fakeHub.address().port}`, apiKey: 'isa_sk_test', webhookSecret: 'whsec_test' });
+    setHubClient(null);
+    clearHubConfig();
+
+    const webhook = async (type, payment, secret = 'whsec_test') => {
+      const raw = JSON.stringify({ id: `evt_${type}`, type, createdAt: new Date().toISOString(), data: { payment } });
+      const t = Math.floor(Date.now() / 1000);
+      const v1 = crypto.createHmac('sha256', secret).update(`${t}.${raw}`).digest('hex');
+      const res = await fetch(`${base}/payments/hub-webhook`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'isa-signature': `t=${t},v1=${v1}`, 'isa-event': type },
+        body: raw,
+      });
+      return res.status;
+    };
+
+    try {
+      // The till to pay from the M-Pesa menu now comes from the Hub.
+      let res = await api('/payments/config');
+      assert.deepEqual(res.body, { enabled: true, method: 'till', number: '5557777', accountReference: null, minAmount: 10, maxAmount: 150000 });
+
+      // A reader pays from a promotion: A-Read's own id is the Hub reference and idempotency key.
+      const promo = (
+        await api('/promotions', {
+          token: alice,
+          method: 'POST',
+          body: { title: 'Supporters', purpose: 'supporter', startsAt: new Date(Date.now() - 1000).toISOString(), endsAt: new Date(Date.now() + 3600e3).toISOString() },
+        })
+      ).body.promotion;
+      res = await api('/payments/stk', { token: carol, method: 'POST', body: { phone: '0711 222 333', amount: 200, promotionId: promo.id } });
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+      const first = res.body.payment;
+      assert.equal(first.status, 'pending');
+      assert.deepEqual(received[0].body, {
+        phone: '254711222333',
+        amount: 200,
+        reference: first.id,
+        purpose: 'supporter',
+        description: 'Support A-Read',
+        metadata: { promotion: promo.id, reader: 'signed-in' },
+      });
+      assert.equal(received[0].idempotencyKey, first.id);
+      const stored = await Payment.findById(first.id);
+      assert.equal(stored.provider, 'hub');
+      assert.equal(stored.hubPaymentId, 'hub_1');
+      assert.equal(stored.checkoutRequestId, undefined, 'A-Read no longer talks to Safaricom itself');
+
+      // Only correctly signed webhooks count.
+      const paid = { ...hubPayments.get('hub_1'), status: 'paid', receipt: 'TJH1PAID00', paidAt: new Date().toISOString(), message: 'Payment received' };
+      assert.equal(await webhook('payment.paid', paid, 'whsec_wrong'), 400);
+      assert.equal((await api(`/payments/${first.id}`)).body.payment.status, 'pending');
+      assert.equal(await webhook('payment.paid', paid), 204);
+      assert.equal(await webhook('payment.paid', paid), 204, 'redelivery is harmless');
+      res = await api(`/payments/${first.id}`);
+      assert.equal(res.body.payment.status, 'paid');
+      assert.equal(res.body.payment.receipt, 'TJH1PAID00');
+      const carolId = (await api('/auth/me', { token: carol })).body.user.id;
+      assert.equal(await Payment.hasPaid(carolId, 'supporter', 200), true);
+      assert.equal(await webhook('ping', undefined), 204, "the dashboard's test webhook is acknowledged");
+
+      // No webhook yet: the payer's page asks the Hub, which knows the payment failed.
+      res = await api('/payments/stk', { method: 'POST', body: { phone: '0711 444 555', amount: 50 } });
+      const second = res.body.payment;
+      hubPayments.set('hub_2', { ...hubPayments.get('hub_2'), status: 'failed', resultCode: 1032, message: 'The payment was cancelled on the phone' });
+      res = await api(`/payments/${second.id}`);
+      assert.equal(res.body.payment.status, 'failed');
+      assert.equal(res.body.payment.message, 'The payment was cancelled on the phone');
+
+      // A late success still wins; an amount M-Pesa disagrees with is held for review.
+      assert.equal(await webhook('payment.paid', { ...hubPayments.get('hub_2'), status: 'paid', receipt: 'TJH2LATE00', message: 'Payment received' }), 204);
+      assert.equal((await api(`/payments/${second.id}`)).body.payment.status, 'paid');
+      res = await api('/payments/stk', { method: 'POST', body: { phone: '0711 666 777', amount: 300 } });
+      const third = res.body.payment;
+      assert.equal(await webhook('payment.disputed', { ...hubPayments.get('hub_3'), status: 'disputed', paidAmount: 30, message: 'M-Pesa reported a different amount; held for review' }), 204);
+      res = await api(`/payments/${third.id}`);
+      assert.equal(res.body.payment.status, 'disputed');
+      assert.match(res.body.payment.message, /no need to pay again/);
+      assert.equal((await api('/payments?status=disputed', { token: alice })).body.payments.length, 1);
+
+      // The Hub says the phone is busy, or can't be reached.
+      res = await api('/payments/stk', { method: 'POST', body: { phone: '0799 000 999', amount: 50 } });
+      assert.equal(res.status, 429);
+      hubDown = true;
+      res = await api('/payments/stk', { method: 'POST', body: { phone: '0711 888 999', amount: 50 } });
+      assert.equal(res.status, 502);
+      assert.match(res.body.error, /couldn't reach M-Pesa/);
+    } finally {
+      Object.assign(env.hub, saved);
+      setHubClient(null);
+      clearHubConfig();
+      fakeHub.close();
+    }
+
+    // Without the Hub settings the webhook route is closed.
+    assert.equal((await fetch(`${base}/payments/hub-webhook`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 404);
   });
 });

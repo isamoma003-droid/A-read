@@ -2580,7 +2580,8 @@ input[type='range'] {
 }
 
 .status-pill.promo-state-off-hours,
-.status-pill.payment-pending {
+.status-pill.payment-pending,
+.status-pill.payment-disputed {
   background: var(--highlight-soft);
   color: var(--text);
 }
@@ -2622,6 +2623,10 @@ input[type='range'] {
 
 .payment-failed > svg {
   color: var(--danger);
+}
+
+.payment-disputed > svg {
+  color: var(--text-muted);
 }
 
 .manual-steps {
