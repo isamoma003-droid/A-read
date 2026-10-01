@@ -5,6 +5,7 @@ process.env.NODE_ENV ||= 'test'; // must be set before src/ modules load (they'r
 process.env.ADMIN_EMAILS = 'alice@example.com';
 process.env.CLOUDINARY_MAX_FILE_MB = '0.004'; // ~4 KB parts so the chunking path is exercised
 process.env.FRONTEND_URL = 'https://a-read.example';
+process.env.GOOGLE_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
 
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
@@ -223,6 +224,29 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal(res.body.user.role, 'user');
   });
 
+  test('guests can browse the catalogue but not read', async () => {
+    let res = await api('/books');
+    assert.equal(res.status, 200);
+    assert.ok(res.body.total >= 3);
+    assert.ok(res.body.books.every((b) => b.file === undefined && b.canEdit === false));
+    res = await api(`/books/${txtBook.id}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.book.file, undefined);
+    assert.equal((await api(`/books/${txtBook.id}/sections`)).status, 200);
+    assert.equal((await api(`/books/${txtBook.id}/sections/0`)).status, 401);
+    assert.equal((await api(`/books/${txtBook.id}`, { method: 'PATCH', body: { title: 'x' } })).status, 401);
+    assert.equal((await api('/progress')).status, 401);
+  });
+
+  test('sitemap lists the home page and every book', async () => {
+    const res = await fetch(`${base.replace('/api', '')}/sitemap.xml?origin=https://a-read.vercel.app`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /xml/);
+    const xml = await res.text();
+    assert.match(xml, /<loc>https:\/\/a-read\.vercel\.app\/<\/loc>/);
+    assert.match(xml, new RegExp(`<loc>https://a-read\\.vercel\\.app/books/${txtBook.id}</loc>`));
+  });
+
   test('only the uploader can edit a book', async () => {
     let res = await api(`/books/${txtBook.id}`, { token: bob, method: 'PATCH', body: { title: 'Hacked' } });
     assert.equal(res.status, 403);
@@ -248,6 +272,64 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal(res.body.progress, null);
     res = await api(`/progress/${txtBook.id}`, { token: bob, method: 'PUT', body: { sectionIndex: -1 } });
     assert.equal(res.status, 400);
+  });
+
+  test('marking a book finished records completion', async () => {
+    let res = await api(`/progress/${txtBook.id}`, { token: alice, method: 'PUT', body: { finished: true } });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.progress.completedAt);
+    assert.equal(res.body.progress.percent, 100);
+    const first = res.body.progress.completedAt;
+    res = await api(`/progress/${txtBook.id}`, { token: alice, method: 'PUT', body: { sectionIndex: 0, percent: 10 } });
+    assert.equal(res.body.progress.completedAt, first, 'completion date is kept while re-reading');
+    res = await api(`/books/${txtBook.id}`, { token: alice });
+    assert.equal(res.body.book.finishedAt, first);
+    res = await api(`/progress/${txtBook.id}`, { token: alice, method: 'PUT', body: { finished: false } });
+    assert.equal(res.body.progress.completedAt, undefined);
+  });
+
+  test('admins assign required reading and track completion', async () => {
+    const emails = [];
+    const { setEmailSender } = await import('../src/services/email.js');
+    setEmailSender(async (m) => emails.push(m));
+    try {
+      let res = await api('/assignments', { token: bob, method: 'POST', body: { bookId: txtBook.id } });
+      assert.equal(res.status, 403);
+      res = await api('/assignments', {
+        token: alice,
+        method: 'POST',
+        body: { bookId: txtBook.id, dueDate: '2000-01-01', note: 'Chapter 1 for Monday', everyone: true, notify: true },
+      });
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+      assert.equal(res.body.emailed, 2);
+      assert.match(emails[0].subject, /Required reading: A Dark Night/);
+      const id = res.body.assignment.id;
+
+      res = await api('/assignments/mine', { token: bob });
+      assert.equal(res.body.assignments.length, 1);
+      assert.equal(res.body.assignments[0].status, 'overdue');
+      assert.equal(res.body.assignments[0].note, 'Chapter 1 for Monday');
+      res = await api(`/books/${txtBook.id}`, { token: bob });
+      assert.equal(res.body.book.requiredReading.id, id);
+
+      await api(`/progress/${txtBook.id}`, { token: bob, method: 'PUT', body: { finished: true } });
+      res = await api('/assignments/mine', { token: bob });
+      assert.equal(res.body.assignments[0].status, 'finished');
+      res = await api('/assignments', { token: alice });
+      assert.equal(res.body.assignments[0].assigned, 2);
+      assert.equal(res.body.assignments[0].finished, 1);
+      res = await api(`/assignments/${id}/report`, { token: alice });
+      assert.deepEqual(res.body.readers.map((r) => [r.name, r.status]), [['Bob', 'finished'], ['Alice', 'overdue']]);
+
+      res = await api('/assignments', { token: alice, method: 'POST', body: { bookId: txtBook.id, everyone: false, userIds: [] } });
+      assert.equal(res.status, 400);
+      res = await api(`/assignments/${id}`, { token: alice, method: 'PATCH', body: { dueDate: null } });
+      assert.equal(res.body.assignment.dueDate, undefined);
+      assert.equal((await api(`/assignments/${id}`, { token: alice, method: 'DELETE' })).status, 204);
+      assert.equal((await api('/assignments/mine', { token: bob })).body.assignments.length, 0);
+    } finally {
+      setEmailSender(null);
+    }
   });
 
   test('bookmarks are private to their owner', async () => {
@@ -358,5 +440,73 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal(res.status, 204);
     assert.equal((await api('/auth/me', { token: bob })).status, 401);
     assert.equal((await api('/books', { token: alice })).body.total, 0);
+  });
+
+  test('email sign-ups must be confirmed before signing in', async () => {
+    const emails = [];
+    const { setEmailSender } = await import('../src/services/email.js');
+    setEmailSender(async (m) => emails.push(m));
+    try {
+      assert.equal((await api('/auth/config')).body.emailVerification, true);
+      let res = await api('/auth/register', { method: 'POST', body: { name: 'Carol', email: 'carol@example.com', password: 'password3' } });
+      assert.equal(res.status, 201);
+      assert.deepEqual(res.body, { pending: true, email: 'carol@example.com' });
+      assert.equal(emails.length, 1);
+      assert.equal(emails[0].to.email, 'carol@example.com');
+
+      res = await api('/auth/login', { method: 'POST', body: { email: 'carol@example.com', password: 'password3' } });
+      assert.equal(res.status, 403);
+      assert.equal(res.body.details.code, 'EMAIL_NOT_VERIFIED');
+
+      // Signing up again (e.g. lost email) re-sends instead of failing.
+      res = await api('/auth/register', { method: 'POST', body: { name: 'Carol', email: 'carol@example.com', password: 'password4' } });
+      assert.equal(res.status, 201);
+      await api('/auth/resend-verification', { method: 'POST', body: { email: 'carol@example.com' } });
+      assert.equal(emails.length, 3);
+      res = await api('/auth/resend-verification', { method: 'POST', body: { email: 'nobody@example.com' } });
+      assert.equal(res.status, 200);
+      assert.equal(emails.length, 3);
+
+      const oldToken = new URL(emails[1].text.match(/https?:\/\/\S+/)[0]).searchParams.get('token');
+      const token = new URL(emails[2].text.match(/https?:\/\/\S+/)[0]).searchParams.get('token');
+      assert.match(emails[2].text, /^Welcome/);
+      assert.equal((await api('/auth/verify-email', { method: 'POST', body: { token: oldToken } })).status, 400);
+      res = await api('/auth/verify-email', { method: 'POST', body: { token } });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.user.email, 'carol@example.com');
+      assert.equal((await api('/auth/verify-email', { method: 'POST', body: { token } })).status, 400, 'links are single-use');
+
+      res = await api('/auth/login', { method: 'POST', body: { email: 'carol@example.com', password: 'password4' } });
+      assert.equal(res.status, 200);
+      res = await api('/auth/register', { method: 'POST', body: { name: 'Carol', email: 'carol@example.com', password: 'password5' } });
+      assert.equal(res.status, 409);
+    } finally {
+      setEmailSender(null);
+    }
+  });
+
+  test('sign in with Google creates or links accounts', async () => {
+    const { setGoogleVerifier } = await import('../src/routes/auth.js');
+    setGoogleVerifier(async (credential) => {
+      if (credential === 'bad-credential-xxxxxxxxx') throw new Error('invalid');
+      const [sub, email, verified] = credential.split('|');
+      return { sub, email, email_verified: verified === 'yes', name: 'Dee Google' };
+    });
+    assert.equal((await api('/auth/config')).body.googleClientId, 'test-client-id.apps.googleusercontent.com');
+    let res = await api('/auth/google', { method: 'POST', body: { credential: 'bad-credential-xxxxxxxxx' } });
+    assert.equal(res.status, 401);
+    res = await api('/auth/google', { method: 'POST', body: { credential: 'g-1|dee@example.com|no|padding-padding' } });
+    assert.equal(res.status, 401);
+    res = await api('/auth/google', { method: 'POST', body: { credential: 'g-1|Dee@Example.com|yes|padding-padding' } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.user.email, 'dee@example.com');
+    assert.equal(res.body.user.google, true);
+    res = await api('/auth/login', { method: 'POST', body: { email: 'dee@example.com', password: 'whatever1' } });
+    assert.match(res.body.error, /Google sign-in/);
+    // An existing email account is linked rather than duplicated.
+    res = await api('/auth/google', { method: 'POST', body: { credential: 'g-2|carol@example.com|yes|padding-padding' } });
+    assert.equal(res.body.user.email, 'carol@example.com');
+    assert.equal(res.body.user.google, true);
+    assert.equal((await api('/auth/login', { method: 'POST', body: { email: 'carol@example.com', password: 'password4' } })).status, 200);
   });
 });

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requireAdmin } from '../middleware/admin.js';
 import { requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
+import { Assignment } from '../models/Assignment.js';
 import { Book } from '../models/Book.js';
 import { Bookmark } from '../models/Bookmark.js';
 import { Progress } from '../models/Progress.js';
@@ -81,7 +82,11 @@ router.delete('/users/:id', async (req, res) => {
   if (req.query.deleteBooks === 'true') {
     for (const book of await Book.find({ uploadedBy: user._id })) await deleteBook(book);
   }
-  await Promise.all([Progress.deleteMany({ user: user._id }), Bookmark.deleteMany({ user: user._id })]);
+  await Promise.all([
+    Progress.deleteMany({ user: user._id }),
+    Bookmark.deleteMany({ user: user._id }),
+    Assignment.updateMany({ users: user._id }, { $pull: { users: user._id } }),
+  ]);
   await user.deleteOne();
   res.status(204).end();
 });

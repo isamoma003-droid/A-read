@@ -4,6 +4,7 @@ import mongoose from '../config/mongoose.js';
 import { env } from '../config/env.js';
 import { assertCloudinaryConfigured } from '../config/cloudinary.js';
 import { BOOK_EXTENSIONS, assertMaxSize } from '../middleware/upload.js';
+import { Assignment } from '../models/Assignment.js';
 import { Book } from '../models/Book.js';
 import { Bookmark } from '../models/Bookmark.js';
 import { Progress } from '../models/Progress.js';
@@ -150,6 +151,7 @@ export async function deleteBook(book) {
     Section.deleteMany({ book: book._id }),
     Progress.deleteMany({ book: book._id }),
     Bookmark.deleteMany({ book: book._id }),
+    Assignment.deleteMany({ book: book._id }),
   ]);
   await book.deleteOne();
   await deleteBookFolder(book._id);

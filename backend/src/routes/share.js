@@ -11,11 +11,14 @@ const escapeHtml = (text = '') =>
 // Public link for sharing on WhatsApp, Telegram, Facebook, X…: serves Open Graph tags (title,
 // description, cover) for the link preview, then sends people on to the book in the app.
 router.get('/books/:id', async (req, res) => {
-  const target = `${env.frontendUrl}/books/${encodeURIComponent(req.params.id)}`;
+  // The Vercel function passes its own origin so previews and redirects use the public site address.
+  const site =
+    typeof req.query.origin === 'string' && /^https?:\/\/[\w.-]+(:\d+)?$/.test(req.query.origin) ? req.query.origin : env.frontendUrl;
+  const target = `${site}/books/${encodeURIComponent(req.params.id)}`;
   const book = mongoose.isValidObjectId(req.params.id)
     ? await Book.findById(req.params.id).select('title author description cover format wordCount')
     : null;
-  if (!book) return res.redirect(302, env.frontendUrl);
+  if (!book) return res.redirect(302, site);
 
   const title = book.author ? `${book.title} by ${book.author}` : book.title;
   const description =

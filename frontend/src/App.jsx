@@ -5,9 +5,10 @@ import ProtectedRoute from './components/ProtectedRoute.jsx';
 import AdminPage from './pages/AdminPage.jsx';
 import BookPage from './pages/BookPage.jsx';
 import LibraryPage from './pages/LibraryPage.jsx';
-import { LoginPage, RegisterPage } from './pages/AuthPages.jsx';
+import { LoginPage, RegisterPage, VerifyEmailPage } from './pages/AuthPages.jsx';
 import NotFoundPage from './pages/NotFoundPage.jsx';
 import { PageLoader } from './components/Feedback.jsx';
+import RequiredPage from './pages/RequiredPage.jsx';
 import UploadPage from './pages/UploadPage.jsx';
 
 // The reader pulls in pdf.js and epub.js, so it loads on demand.
@@ -18,6 +19,19 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
+      <Route path="/verify-email" element={<VerifyEmailPage />} />
+      <Route element={<Layout />}>
+        {/* Public: anyone (and search engines) can browse the catalogue. */}
+        <Route index element={<LibraryPage />} />
+        <Route path="/books/:id" element={<BookPage />} />
+        <Route path="/library" element={<Navigate to="/" replace />} />
+        <Route element={<ProtectedRoute />}>
+          <Route path="/upload" element={<UploadPage />} />
+          <Route path="/required" element={<RequiredPage />} />
+          <Route path="/admin" element={<AdminPage />} />
+        </Route>
+        <Route path="*" element={<NotFoundPage />} />
+      </Route>
       <Route element={<ProtectedRoute />}>
         {/* The reader is full-screen, outside the main layout. */}
         <Route
@@ -28,14 +42,6 @@ export default function App() {
             </Suspense>
           }
         />
-        <Route element={<Layout />}>
-          <Route index element={<LibraryPage />} />
-          <Route path="/upload" element={<UploadPage />} />
-          <Route path="/books/:id" element={<BookPage />} />
-          <Route path="/admin" element={<AdminPage />} />
-          <Route path="/library" element={<Navigate to="/" replace />} />
-          <Route path="*" element={<NotFoundPage />} />
-        </Route>
       </Route>
     </Routes>
   );

@@ -1,7 +1,8 @@
-import { BookOpen, LogOut, Moon, Shield, Sun, Upload } from 'lucide-react';
-import { Link, NavLink, Outlet } from 'react-router-dom';
+import { BookOpen, ListChecks, LogOut, Moon, Shield, Sun, Upload } from 'lucide-react';
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
+import InstallButton from './InstallButton.jsx';
 
 const THEME_ORDER = ['light', 'sepia', 'dark'];
 
@@ -18,6 +19,7 @@ export function ThemeToggle() {
 
 export default function Layout() {
   const { user, logout } = useAuth();
+  const location = useLocation();
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -26,28 +28,47 @@ export default function Layout() {
             <span className="brand-mark" aria-hidden="true">
               <BookOpen size={18} />
             </span>
-            A-Read
+            <span className="brand-name">A-Read</span>
           </Link>
           <nav className="topnav">
             <NavLink to="/" end className="nav-library">
               Library
             </NavLink>
-            {user.role === 'admin' && (
-              <NavLink to="/admin" title="Admin panel">
-                <Shield size={16} aria-hidden="true" /> <span className="hide-mobile">Admin</span>
-              </NavLink>
+            {user ? (
+              <>
+                <NavLink to="/required" title="Required reading">
+                  <ListChecks size={16} aria-hidden="true" /> <span className="hide-mobile">Required</span>
+                </NavLink>
+                {user.role === 'admin' && (
+                  <NavLink to="/admin" title="Admin panel">
+                    <Shield size={16} aria-hidden="true" /> <span className="hide-mobile">Admin</span>
+                  </NavLink>
+                )}
+                <NavLink to="/upload" className="button button-primary button-small">
+                  <Upload size={16} aria-hidden="true" /> <span className="hide-mobile">Upload</span>
+                </NavLink>
+                <InstallButton />
+                <ThemeToggle />
+                <span className="user-chip" title={`${user.name} · ${user.email}`}>
+                  {user.name.slice(0, 1).toUpperCase()}
+                </span>
+                <button type="button" className="icon-button" onClick={logout} title="Log out">
+                  <LogOut size={18} />
+                  <span className="sr-only">Log out</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <InstallButton />
+                <ThemeToggle />
+                <Link to="/login" state={{ from: location.pathname }} className="button button-ghost button-small">
+                  Log in
+                </Link>
+                <Link to="/register" state={{ from: location.pathname }} className="button button-primary button-small">
+                  Sign up
+                </Link>
+              </>
             )}
-            <NavLink to="/upload" className="button button-primary button-small">
-              <Upload size={16} aria-hidden="true" /> <span className="hide-mobile">Upload</span>
-            </NavLink>
-            <ThemeToggle />
-            <span className="user-chip" title={user.email}>
-              {user.name.slice(0, 1).toUpperCase()}
-            </span>
-            <button type="button" className="icon-button" onClick={logout} title="Log out">
-              <LogOut size={18} />
-              <span className="sr-only">Log out</span>
-            </button>
           </nav>
         </div>
       </header>

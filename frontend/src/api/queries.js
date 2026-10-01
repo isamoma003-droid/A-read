@@ -15,6 +15,9 @@ export const keys = {
   voices: (language) => ['voices', language],
   adminStats: ['admin', 'stats'],
   adminUsers: (q) => ['admin', 'users', q],
+  myAssignments: ['assignments', 'mine'],
+  assignments: ['admin', 'assignments'],
+  assignmentReport: (id) => ['admin', 'assignments', id],
 };
 
 function toQuery(params) {
@@ -37,8 +40,8 @@ export function useBooks(params) {
 
 export const useTags = () => useQuery({ queryKey: keys.tags, queryFn: () => api('/books/tags') });
 
-export const useContinueReading = () =>
-  useQuery({ queryKey: keys.continueReading, queryFn: () => api('/progress').then((r) => r.items) });
+export const useContinueReading = (enabled = true) =>
+  useQuery({ queryKey: keys.continueReading, queryFn: () => api('/progress').then((r) => r.items), enabled });
 
 export const useBook = (id) =>
   useQuery({ queryKey: keys.book(id), queryFn: () => api(`/books/${id}`).then((r) => r.book), enabled: Boolean(id) });
@@ -110,3 +113,12 @@ export const useAdminUsers = (q) =>
     queryFn: () => api(`/admin/users${toQuery({ q })}`).then((r) => r.users),
     placeholderData: (previous) => previous,
   });
+
+export const useMyAssignments = (enabled = true) =>
+  useQuery({ queryKey: keys.myAssignments, queryFn: () => api('/assignments/mine').then((r) => r.assignments), enabled });
+
+export const useAssignments = () =>
+  useQuery({ queryKey: keys.assignments, queryFn: () => api('/assignments').then((r) => r.assignments) });
+
+export const useAssignmentReport = (id) =>
+  useQuery({ queryKey: keys.assignmentReport(id), queryFn: () => api(`/assignments/${id}/report`), enabled: Boolean(id) });

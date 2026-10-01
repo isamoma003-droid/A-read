@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { BookOpen, Headphones, ImagePlus, Music, Pencil, Sparkles, Trash2 } from 'lucide-react';
+import { BookOpen, CalendarClock, CheckCircle2, Headphones, ImagePlus, LogIn, Music, Pencil, Sparkles, Trash2 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, upload } from '../api/client.js';
@@ -17,6 +17,8 @@ import ShareButton from '../components/ShareButton.jsx';
 import FileDrop from '../components/FileDrop.jsx';
 import { ErrorMessage, PageLoader, ProgressBar, Spinner } from '../components/Feedback.jsx';
 import NotFoundPage from './NotFoundPage.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
+import { useDocumentTitle } from '../utils/useDocumentTitle.js';
 import {
   FORMAT_LABELS,
   formatDuration,
@@ -30,7 +32,12 @@ import {
 export default function BookPage() {
   const { id } = useParams();
   const { data: book, isPending, error } = useBook(id);
+  const { user } = useAuth();
   const [editing, setEditing] = useState(false);
+  useDocumentTitle(
+    book ? `${book.title}${book.author ? ` by ${book.author}` : ''}` : null,
+    book ? (book.description || `Read or listen to ${book.title} on A-Read.`).slice(0, 160) : undefined,
+  );
 
   if (isPending) return <PageLoader label="Loading book…" />;
   if (error?.status === 404 || error?.status === 400) return <NotFoundPage />;
@@ -75,13 +82,30 @@ export default function BookPage() {
               <span className="muted">{Math.round(percent)}% read</span>
             </div>
           )}
+          {user && book.requiredReading && (
+            <p className={`required-flag ${book.finishedAt ? 'done' : ''}`}>
+              <CalendarClock size={16} aria-hidden="true" /> Required reading
+              {book.requiredReading.dueDate && <> · due {new Date(book.requiredReading.dueDate).toLocaleDateString()}</>}
+              {book.finishedAt && <> · finished</>}
+              {book.requiredReading.note && <span className="required-note">{book.requiredReading.note}</span>}
+            </p>
+          )}
           <div className="button-row">
-            <Link to={`/read/${book.id}`} className="button button-primary">
-              <BookOpen size={18} aria-hidden="true" /> {percent > 0 ? 'Continue reading' : 'Start reading'}
-            </Link>
-            {(!noText || book.audiobook) && (
-              <Link to={`/read/${book.id}?listen=1`} className="button">
-                <Headphones size={18} aria-hidden="true" /> Listen
+            {user ? (
+              <>
+                <Link to={`/read/${book.id}`} className="button button-primary">
+                  <BookOpen size={18} aria-hidden="true" /> {percent > 0 ? 'Continue reading' : 'Start reading'}
+                </Link>
+                {(!noText || book.audiobook) && (
+                  <Link to={`/read/${book.id}?listen=1`} className="button">
+                    <Headphones size={18} aria-hidden="true" /> Listen
+                  </Link>
+                )}
+                <FinishedButton book={book} />
+              </>
+            ) : (
+              <Link to="/login" state={{ from: `/books/${book.id}` }} className="button button-primary">
+                <LogIn size={18} aria-hidden="true" /> Sign in to read or listen
               </Link>
             )}
             <ShareButton book={book} />
@@ -106,8 +130,30 @@ export default function BookPage() {
       <div className="book-columns">
         <Contents book={book} />
         <div className="stack">
-          <NarrationPanel book={book} />
-          <AudiobookPanel book={book} />
+          {user ? (
+            <>
+              <NarrationPanel book={book} />
+              <AudiobookPanel book={book} />
+            </>
+          ) : (
+            <section className="panel guest-panel">
+              <h2 className="panel-title">
+                <Headphones size={18} aria-hidden="true" /> Read it or listen to it
+              </h2>
+              <p className="muted">
+                Create a free account to read this book on screen, have it read aloud with the current sentence highlighted
+                {book.hasAudio ? ', or play its audio' : ''}. Your place is saved on every device.
+              </p>
+              <div className="button-row">
+                <Link to="/register" state={{ from: `/books/${book.id}` }} className="button button-primary">
+                  Create account
+                </Link>
+                <Link to="/login" state={{ from: `/books/${book.id}` }} className="button">
+                  Log in
+                </Link>
+              </div>
+            </section>
+          )}
         </div>
       </div>
     </div>
@@ -115,6 +161,7 @@ export default function BookPage() {
 }
 
 function Contents({ book }) {
+  const { user } = useAuth();
   const { data: sections, isPending } = useSections(book.id);
   const entries = book.toc?.length
     ? book.toc
@@ -128,7 +175,7 @@ function Contents({ book }) {
         <ol className="toc-list">
           {entries.slice(0, 400).map((entry, i) => (
             <li key={`${entry.sectionIndex}-${i}`} style={{ paddingLeft: `${entry.depth * 16}px` }}>
-              <Link to={`/read/${book.id}?section=${entry.sectionIndex}`}>{entry.title}</Link>
+              {user ? <Link to={`/read/${book.id}?section=${entry.sectionIndex}`}>{entry.title}</Link> : <span>{entry.title}</span>}
             </li>
           ))}
         </ol>
@@ -442,3 +489,25 @@ function EditBook({ book, onDone }) {
   );
 }
 
+
+function FinishedButton({ book }) {
+  const queryClient = useQueryClient();
+  const toggle = useBookMutation(book.id, () => api(`/progress/${book.id}`, { method: 'PUT', body: { finished: !book.finishedAt } }), {
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: keys.book(book.id) });
+      queryClient.invalidateQueries({ queryKey: keys.myAssignments });
+      queryClient.invalidateQueries({ queryKey: keys.progress(book.id) });
+    },
+  });
+  return (
+    <button
+      type="button"
+      className={`button ${book.finishedAt ? 'button-done' : 'button-ghost'}`}
+      onClick={() => toggle.mutate()}
+      disabled={toggle.isPending}
+      title={book.finishedAt ? 'Click to mark as not finished' : 'Mark this book as finished'}
+    >
+      <CheckCircle2 size={16} aria-hidden="true" /> {book.finishedAt ? 'Finished' : 'Mark as finished'}
+    </button>
+  );
+}

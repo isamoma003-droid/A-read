@@ -9,9 +9,12 @@ import { ErrorMessage, Spinner } from '../components/Feedback.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { FORMAT_LABELS, formatBytes, formatNumber, timeAgo } from '../utils/format.js';
 import { useDebounced } from '../utils/useDebounced.js';
+import { useDocumentTitle } from '../utils/useDocumentTitle.js';
+import AdminAssignments from './AdminAssignments.jsx';
 
 const TABS = [
   ['overview', 'Overview'],
+  ['assignments', 'Assignments'],
   ['users', 'Users'],
   ['books', 'Books'],
 ];
@@ -19,6 +22,7 @@ const TABS = [
 export default function AdminPage() {
   const { user } = useAuth();
   const [tab, setTab] = useState('overview');
+  useDocumentTitle('Admin');
   if (user.role !== 'admin') return <Navigate to="/" replace />;
 
   return (
@@ -37,6 +41,7 @@ export default function AdminPage() {
         ))}
       </div>
       {tab === 'overview' && <Overview />}
+      {tab === 'assignments' && <AdminAssignments />}
       {tab === 'users' && <UsersTab me={user} />}
       {tab === 'books' && <BooksTab />}
     </div>

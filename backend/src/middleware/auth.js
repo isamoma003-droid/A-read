@@ -24,3 +24,14 @@ export async function requireAuth(req, _res, next) {
   req.user = user;
   next();
 }
+
+// Like requireAuth, but lets guests through (req.user stays undefined).
+export async function optionalAuth(req, res, next) {
+  if (!req.get('authorization')) return next();
+  try {
+    await requireAuth(req, res, () => {});
+  } catch {
+    req.user = undefined;
+  }
+  next();
+}

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, Mail, Share2 } from 'lucide-react';
-import { API_ORIGIN } from '../api/client.js';
 
 // Brand marks drawn inline (lucide doesn't ship brand logos).
 const WhatsAppIcon = () => (
@@ -24,8 +23,10 @@ const XIcon = () => (
   </svg>
 );
 
+// Links use this site's own address. On Vercel, /share/books/:id is answered by a function that
+// returns link-preview tags (title, cover) and then opens the book page.
 export function shareLink(book) {
-  return `${API_ORIGIN}/share/books/${book.id}`;
+  return `${window.location.origin}/share/books/${book.id}`;
 }
 
 export default function ShareButton({ book, className = 'button' }) {

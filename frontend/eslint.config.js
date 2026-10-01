@@ -19,4 +19,5 @@ export default [
       'no-unused-vars': ['error', { varsIgnorePattern: '^_', argsIgnorePattern: '^_' }],
     },
   },
+  { files: ['api/**/*.js', 'public/sw.js'], languageOptions: { globals: { ...globals.node, ...globals.serviceworker } } },
 ];

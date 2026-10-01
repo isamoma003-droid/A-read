@@ -50,4 +50,11 @@ export const env = {
   googleTtsEnabled: Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS),
   defaultTtsVoice: process.env.GOOGLE_TTS_DEFAULT_VOICE || 'en-US-Neural2-F',
   narrationMaxChars: number('NARRATION_MAX_CHARS', 1_500_000),
+  // Brevo transactional email (account confirmation, assignment notices). Without a key,
+  // new accounts are confirmed automatically.
+  brevoApiKey: process.env.BREVO_API_KEY || '',
+  emailFrom: process.env.EMAIL_FROM || '',
+  emailFromName: process.env.EMAIL_FROM_NAME || 'A-Read',
+  // OAuth client ID for "Sign in with Google" (Google Cloud console → Credentials).
+  googleClientId: process.env.GOOGLE_CLIENT_ID || '',
 };

@@ -12,6 +12,8 @@ const progressSchema = new Schema(
     audiobookTime: { type: Number, default: 0, min: 0 },
     view: { type: String, enum: ['text', 'page'], default: 'text' },
     percent: { type: Number, default: 0, min: 0, max: 100 },
+    // Set when the reader reaches the end or marks the book as finished.
+    completedAt: Date,
   },
   { timestamps: true },
 );

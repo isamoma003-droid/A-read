@@ -2,6 +2,8 @@ import { Library, Search, Upload, X } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { useBooks, useContinueReading, useTags } from '../api/queries.js';
+import RequiredShelf from '../components/RequiredShelf.jsx';
+import { useDocumentTitle } from '../utils/useDocumentTitle.js';
 import BookCard, { BookCardSkeleton } from '../components/BookCard.jsx';
 import { EmptyState, ErrorMessage, Spinner } from '../components/Feedback.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -21,7 +23,7 @@ const AUDIO = [
 ];
 
 function ContinueReading() {
-  const { data: items } = useContinueReading();
+  const { data: items } = useContinueReading(true);
   if (!items?.length) return null;
   return (
     <section className="continue">
@@ -37,6 +39,7 @@ function ContinueReading() {
 
 export default function LibraryPage() {
   const { user } = useAuth();
+  useDocumentTitle(null);
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState(params.get('q') || '');
   const debouncedQuery = useDebounced(query.trim(), 350);
@@ -71,9 +74,17 @@ export default function LibraryPage() {
     <div className="library">
       <section className="hero">
         <div className="hero-text">
-          <p className="eyebrow">Hello, {user.name.split(' ')[0]}</p>
+          <p className="eyebrow">{user ? `Hello, ${user.name.split(' ')[0]}` : 'A free library you can listen to'}</p>
           <h1>What will you read — or hear — today?</h1>
-          <p className="muted">Every book in the shared library can be read on screen or listened to.</p>
+          <p className="muted">
+            Every book in the shared library can be read on screen or listened to.
+            {!user && (
+              <>
+                {' '}
+                <Link to="/register">Create a free account</Link> to start.
+              </>
+            )}
+          </p>
         </div>
         <label className="search search-hero">
           <Search size={20} aria-hidden="true" />
@@ -87,7 +98,8 @@ export default function LibraryPage() {
         </label>
       </section>
 
-      {!filtering && <ContinueReading />}
+      {!filtering && user && <RequiredShelf />}
+      {!filtering && user && <ContinueReading />}
 
       <section>
         <div className="library-header">

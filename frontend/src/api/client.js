@@ -1,8 +1,6 @@
 const API_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 const TOKEN_KEY = 'a-read-token';
 
-// Origin of the API server (where public share links live).
-export const API_ORIGIN = API_URL.startsWith('http') ? new URL(API_URL).origin : window.location.origin;
 
 export class ApiError extends Error {
   constructor(status, message, details) {

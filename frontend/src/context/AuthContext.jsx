@@ -35,8 +35,13 @@ export function AuthProvider({ children }) {
       user,
       loading,
       login: (email, password) => api('/auth/login', { method: 'POST', body: { email, password } }).then(startSession),
+      // Resolves to { pending: true, email } when the account must be confirmed by email first.
       register: (name, email, password) =>
-        api('/auth/register', { method: 'POST', body: { name, email, password } }).then(startSession),
+        api('/auth/register', { method: 'POST', body: { name, email, password } }).then((data) =>
+          data.pending ? data : startSession(data),
+        ),
+      loginWithGoogle: (credential) => api('/auth/google', { method: 'POST', body: { credential } }).then(startSession),
+      verifyEmail: (token) => api('/auth/verify-email', { method: 'POST', body: { token } }).then(startSession),
       logout,
     }),
     [user, loading, logout, startSession],

@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { env } from '../config/env.js';
-import { requireAuth } from '../middleware/auth.js';
+import { optionalAuth } from '../middleware/auth.js';
 import { uploadAudio, uploadBook, uploadCover } from '../middleware/upload.js';
 import { validate } from '../middleware/validate.js';
+import { Assignment } from '../models/Assignment.js';
 import { Book } from '../models/Book.js';
 import { Bookmark } from '../models/Bookmark.js';
 import { Progress } from '../models/Progress.js';
@@ -17,10 +18,17 @@ import {
   replaceCover,
 } from '../services/books.js';
 import { deleteNarration, isNarrating, startNarration, stopNarration } from '../services/narration.js';
-import { badRequest, forbidden, notFound } from '../utils/httpError.js';
+import { badRequest, forbidden, notFound, unauthorized } from '../utils/httpError.js';
 
 const router = Router();
-router.use(requireAuth);
+// The catalogue (list, details, table of contents) is public so it can be browsed and indexed.
+// Reading, listening and changing anything needs an account.
+router.use(optionalAuth);
+
+function signedIn(req, _res, next) {
+  if (!req.user) throw unauthorized('Sign in to read and listen');
+  next();
+}
 
 const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -37,8 +45,14 @@ async function findEditableBook(req) {
 }
 
 function present(book, user, progress) {
+  const json = book.toJSON();
+  if (!user) {
+    // Guests see the catalogue entry, not the downloadable files.
+    delete json.file;
+    if (json.audiobook) json.audiobook = { duration: json.audiobook.duration, originalName: json.audiobook.originalName };
+  }
   return {
-    ...book.toJSON(),
+    ...json,
     canEdit: book.canEdit(user),
     hasAudio: Boolean(book.audiobook?.url) || ['ready', 'partial'].includes(book.narration?.status),
     progress: progress ? { percent: progress.percent, updatedAt: progress.updatedAt } : null,
@@ -69,7 +83,7 @@ router.get('/', validate(listSchema, 'query'), async (req, res) => {
   }
   if (format) and.push({ format });
   if (tag) and.push({ tags: tag });
-  if (mine) and.push({ uploadedBy: req.user._id });
+  if (mine && req.user) and.push({ uploadedBy: req.user._id });
   const hasNarration = { 'narration.status': { $in: ['ready', 'partial'] } };
   const hasAudiobook = { 'audiobook.url': { $exists: true } };
   if (audio === 'narration') and.push(hasNarration);
@@ -87,7 +101,7 @@ router.get('/', validate(listSchema, 'query'), async (req, res) => {
     Book.countDocuments(filter),
   ]);
 
-  const progress = await Progress.find({ user: req.user._id, book: { $in: books.map((b) => b._id) } });
+  const progress = req.user ? await Progress.find({ user: req.user._id, book: { $in: books.map((b) => b._id) } }) : [];
   const byBook = new Map(progress.map((p) => [String(p.book), p]));
   res.json({
     books: books.map((book) => present(book, req.user, byBook.get(String(book._id)))),
@@ -117,7 +131,7 @@ const createSchema = z.object({
   tags: z.string().max(500).optional(),
 });
 
-router.post('/', uploadBook, validate(createSchema), async (req, res) => {
+router.post('/', signedIn, uploadBook, validate(createSchema), async (req, res) => {
   const book = await createBook({ user: req.user, files: req.files, fields: req.valid.body });
   await book.populate('uploadedBy', 'name');
   res.status(201).json({ book: present(book, req.user) });
@@ -125,8 +139,19 @@ router.post('/', uploadBook, validate(createSchema), async (req, res) => {
 
 router.get('/:id', async (req, res) => {
   const book = await findBook(req.params.id);
-  const progress = await Progress.findOne({ user: req.user._id, book: book._id });
-  res.json({ book: present(book, req.user, progress) });
+  const [progress, assignment] = req.user
+    ? await Promise.all([
+        Progress.findOne({ user: req.user._id, book: book._id }),
+        Assignment.findOne({ book: book._id, $or: [{ everyone: true }, { users: req.user._id }] }).sort({ dueDate: 1 }),
+      ])
+    : [null, null];
+  res.json({
+    book: {
+      ...present(book, req.user, progress),
+      finishedAt: progress?.completedAt ?? null,
+      requiredReading: assignment ? { id: assignment.id, dueDate: assignment.dueDate ?? null, note: assignment.note } : null,
+    },
+  });
 });
 
 const updateSchema = z.object({
@@ -137,7 +162,7 @@ const updateSchema = z.object({
   tags: z.union([z.string().max(500), z.array(z.string().max(50)).max(20)]).optional(),
 });
 
-router.patch('/:id', validate(updateSchema), async (req, res) => {
+router.patch('/:id', signedIn, validate(updateSchema), async (req, res) => {
   const book = await findEditableBook(req);
   const { tags, ...fields } = req.valid.body;
   book.set(fields);
@@ -146,13 +171,13 @@ router.patch('/:id', validate(updateSchema), async (req, res) => {
   res.json({ book: present(book, req.user) });
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', signedIn, async (req, res) => {
   const book = await findEditableBook(req);
   await deleteBook(book);
   res.status(204).end();
 });
 
-router.put('/:id/cover', uploadCover, async (req, res) => {
+router.put('/:id/cover', signedIn, uploadCover, async (req, res) => {
   const book = await findEditableBook(req);
   await replaceCover(book, req.file);
   res.json({ book: present(book, req.user) });
@@ -178,7 +203,7 @@ router.get('/:id/sections', async (req, res) => {
   });
 });
 
-router.get('/:id/sections/:index', async (req, res) => {
+router.get('/:id/sections/:index', signedIn, async (req, res) => {
   const index = Number(req.params.index);
   if (!Number.isInteger(index) || index < 0) throw badRequest('Invalid section number');
   const section = await Section.findOne({ book: req.params.id, index }).lean();
@@ -189,13 +214,13 @@ router.get('/:id/sections/:index', async (req, res) => {
 
 // --- Audio ----------------------------------------------------------------------------------
 
-router.post('/:id/audiobook', uploadAudio, async (req, res) => {
+router.post('/:id/audiobook', signedIn, uploadAudio, async (req, res) => {
   const book = await findEditableBook(req);
   await attachAudiobook(book, req.file, req.user);
   res.json({ book: present(book, req.user) });
 });
 
-router.delete('/:id/audiobook', async (req, res) => {
+router.delete('/:id/audiobook', signedIn, async (req, res) => {
   const book = await findEditableBook(req);
   await removeAudiobook(book);
   res.json({ book: present(book, req.user) });
@@ -215,14 +240,14 @@ const narrationSchema = z.object({
     .default(env.defaultTtsVoice),
 });
 
-router.post('/:id/narration', validate(narrationSchema), async (req, res) => {
+router.post('/:id/narration', signedIn, validate(narrationSchema), async (req, res) => {
   const book = await findEditableBook(req);
   await startNarration(book, { voice: req.valid.body.voice, user: req.user });
   res.status(202).json({ narration: book.narration, running: true });
 });
 
 // Cancels a running job (keeping what's done) or, with ?purge=true, deletes all narration audio.
-router.delete('/:id/narration', async (req, res) => {
+router.delete('/:id/narration', signedIn, async (req, res) => {
   const book = await findEditableBook(req);
   if (req.query.purge === 'true') {
     await deleteNarration(book);
@@ -245,12 +270,12 @@ const bookmarkSchema = z.object({
   snippet: z.string().trim().max(300).default(''),
 });
 
-router.get('/:id/bookmarks', async (req, res) => {
+router.get('/:id/bookmarks', signedIn, async (req, res) => {
   const bookmarks = await Bookmark.find({ user: req.user._id, book: req.params.id }).sort({ sectionIndex: 1, sentenceIndex: 1 });
   res.json({ bookmarks });
 });
 
-router.post('/:id/bookmarks', validate(bookmarkSchema), async (req, res) => {
+router.post('/:id/bookmarks', signedIn, validate(bookmarkSchema), async (req, res) => {
   const book = await findBook(req.params.id);
   const bookmark = await Bookmark.create({ ...req.valid.body, user: req.user._id, book: book._id });
   res.status(201).json({ bookmark });

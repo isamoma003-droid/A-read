@@ -15,7 +15,12 @@ A shared book library where people upload books and then **read them on screen o
 - **Share** any book to WhatsApp, Telegram, Facebook, X, email or a copied link, with a title-and-cover preview.
 - **Admin panel** (`/admin`): library stats, user management (promote/demote admins, delete accounts), and book moderation.
 
-Everyone with an account sees the whole library. Only the person who uploaded a book (or an admin) can edit it, delete it, or add audio.
+- **Required reading**: admins assign books to everyone or to chosen readers, with a due date and a note (optionally emailed). Readers get a Required reading list; admins see who has finished.
+- **Accounts**: email sign-up with a confirmation link (sent through Brevo), or **Sign in with Google**.
+- **Public catalogue + SEO**: anyone, including search engines, can browse the library and book pages (`/sitemap.xml`, `/robots.txt`). Reading and listening need an account.
+- **Installable app (PWA)**: add it to the home screen on Android, iOS and desktop; the app shell works offline.
+
+Only the person who uploaded a book (or an admin) can edit it, delete it, or add audio.
 
 ## Tech stack
 
@@ -87,7 +92,12 @@ Cloudinary plans cap the size of each stored file (free plan: 10 MB for PDFs and
 
 Without this, everything else still works. Readers use their device voice, and the narration panel explains that cloud narration isn't set up.
 
-### 5. Run it
+### 5. (Optional) Email confirmation and Google sign-in
+
+- **Brevo**: create an API key (SMTP & API → API Keys) and verify a sender address. Set `BREVO_API_KEY` and `EMAIL_FROM` (plus `EMAIL_FROM_NAME`). New email accounts must then click the confirmation link before they can sign in. Without these settings, accounts are active right away.
+- **Google**: in the Google Cloud console create an OAuth client ID of type *Web application*. Add your frontend URLs (e.g. `https://a-read.vercel.app`, `http://localhost:5173`) as **Authorized JavaScript origins**, and set `GOOGLE_CLIENT_ID` on the backend. The "Continue with Google" button appears automatically.
+
+### 6. Run it
 
 ```bash
 npm run dev:backend    # API on http://localhost:5000
@@ -108,7 +118,13 @@ Each section is stored as a list of sentences (split with `Intl.Segmenter`) plus
 
 **Cloud narration.** A background job turns each section into an MP3. The SSML puts a `<mark>` before every sentence, so Google returns each sentence's start time. Those times drive the highlight. Requests are chunked under Google's 5,000-byte limit and the audio is joined per section. Jobs survive a stop and can be **resumed** (sections already done with the same voice are skipped). If the server restarts mid-job, the book shows "Interrupted" and can be resumed.
 
-**Sharing.** Share links point at the API (`https://<api>/share/books/<id>`). That page carries Open Graph tags (title, author, cover), so WhatsApp and other apps show a preview, and then redirects to the book in the app. Visitors who aren't logged in are taken to it after logging in or signing up. On Render's free plan the first preview after the server sleeps can time out; sharing again works.
+**Sharing and SEO on Vercel.** `frontend/api/` holds three small Vercel Functions, routed by `frontend/vercel.json`:
+
+- `/share/books/:id` returns Open Graph tags (title, author, cover) so WhatsApp and other apps show a preview, then opens the book page.
+- `/sitemap.xml` lists the library and every book for Google.
+- `/robots.txt` points crawlers at the sitemap.
+
+All three read `VITE_API_URL` to reach the backend. After deploying, submit `https://<your-site>/sitemap.xml` in Google Search Console. On Render's free plan the backend sleeps, so the first preview or sitemap fetch after a quiet period can be slow.
 
 **Reading position.** The reader saves the section, sentence, EPUB location and audiobook time (debounced, and again when the tab is hidden). The library's "Continue reading" row comes from this.
 

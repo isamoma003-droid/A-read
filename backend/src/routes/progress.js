@@ -15,9 +15,10 @@ router.get('/', async (req, res) => {
     .sort({ updatedAt: -1 })
     .limit(12)
     .populate('book', 'title author cover format sectionCount narration.status audiobook.url');
+  // Finished books drop off "continue reading".
   res.json({
     items: items
-      .filter((item) => item.book)
+      .filter((item) => item.book && !item.completedAt)
       .map((item) => ({
         book: item.book,
         percent: item.percent,
@@ -33,20 +34,33 @@ router.get('/:bookId', async (req, res) => {
 });
 
 const progressSchema = z.object({
-  sectionIndex: z.number().int().min(0),
+  sectionIndex: z.number().int().min(0).default(0),
   sentenceIndex: z.number().int().min(0).default(0),
   epubCfi: z.string().max(500).optional(),
   audiobookTime: z.number().min(0).optional(),
   view: z.enum(['text', 'page']).optional(),
   percent: z.number().min(0).max(100).optional(),
+  // true = mark as finished, false = mark as not finished
+  finished: z.boolean().optional(),
 });
 
 router.put('/:bookId', validate(progressSchema), async (req, res) => {
   const book = await Book.findById(req.params.bookId).select('_id');
   if (!book) throw notFound('Book not found');
+  const { finished, ...fields } = req.valid.body;
+  const update = { $set: fields };
+  if (finished === true || (finished === undefined && fields.percent >= 99.5)) {
+    update.$set.completedAt = new Date();
+    if (finished) update.$set.percent = 100;
+  } else if (finished === false) {
+    update.$unset = { completedAt: 1 };
+  }
+  // Reaching the end once is enough; keep the first completion date.
+  const existing = await Progress.findOne({ user: req.user._id, book: book._id }).select('completedAt');
+  if (existing?.completedAt && finished !== false) delete update.$set.completedAt;
   const progress = await Progress.findOneAndUpdate(
     { user: req.user._id, book: book._id },
-    { $set: req.valid.body },
+    update,
     { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true },
   );
   res.json({ progress });

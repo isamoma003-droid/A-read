@@ -255,7 +255,8 @@ function Reader({ book, sections, saved, requestedSection, listen }) {
     if (!total) return sections.length ? ((position.section + 1) / sections.length) * 100 : 0;
     const before = sections.slice(0, position.section).reduce((n, s) => n + s.wordCount, 0);
     const meta = sections[position.section];
-    const within = meta?.sentenceCount ? position.sentence / meta.sentenceCount : 0;
+    // Counting the current sentence as read means the last sentence of the book is 100% (finished).
+    const within = meta?.sentenceCount ? (position.sentence + 1) / meta.sentenceCount : 0;
     return Math.min(100, ((before + within * (meta?.wordCount || 0)) / total) * 100);
   }, [hasText, audiobook.time, audiobook.duration, sections, position]);
 
@@ -295,6 +296,7 @@ function Reader({ book, sections, saved, requestedSection, listen }) {
       window.removeEventListener('pagehide', flush);
       flush();
       queryClient.invalidateQueries({ queryKey: keys.continueReading });
+      queryClient.invalidateQueries({ queryKey: keys.myAssignments });
       queryClient.invalidateQueries({ queryKey: keys.book(book.id) });
       queryClient.invalidateQueries({ queryKey: ['books'] });
     };
