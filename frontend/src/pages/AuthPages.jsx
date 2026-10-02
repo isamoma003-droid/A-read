@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { BookOpen, MailCheck } from 'lucide-react';
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
+import { useSystemConfig } from '../api/queries.js';
 import { ErrorMessage, Spinner } from '../components/Feedback.jsx';
 import GoogleButton from '../components/GoogleButton.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -155,6 +156,7 @@ export function RegisterPage() {
   const [busy, setBusy] = useState(false);
   const [pendingEmail, setPendingEmail] = useState(null);
   const onGoogle = useGoogleSignIn(setError);
+  const { data: system } = useSystemConfig();
   useDocumentTitle('Create an account');
   if (user) return <Navigate to={location.state?.from || '/'} replace />;
 
@@ -202,6 +204,7 @@ export function RegisterPage() {
         </>
       }
     >
+      {system?.signupsOpen === false && <p className="notice">New sign-ups are closed right now. If you already have an account, log in.</p>}
       <form className="form" onSubmit={onSubmit}>
         <label className="field">
           <span>Name</span>

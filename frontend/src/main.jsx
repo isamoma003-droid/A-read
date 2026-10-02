@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App.jsx';
+import { API_URL } from './api/client.js';
 import { flushPendingProgress } from './offline/progressQueue.js';
 import { AuthProvider } from './context/AuthContext.jsx';
 import { SettingsProvider } from './context/SettingsContext.jsx';
@@ -34,6 +35,17 @@ createRoot(document.getElementById('root')).render(
     </QueryClientProvider>
   </StrictMode>,
 );
+
+// Each time the app opens (or comes back after a while), wake the API and, through it, ISA Tech
+// Hub: both can sleep when idle, and a reader paying by M-Pesa shouldn't wait for them.
+let lastWake = 0;
+function wakeServers() {
+  if (Date.now() - lastWake < 5 * 60 * 1000) return;
+  lastWake = Date.now();
+  fetch(`${API_URL}/system/wake`, { cache: 'no-store' }).catch(() => {});
+}
+wakeServers();
+document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && wakeServers());
 
 // Send reading progress saved while offline.
 flushPendingProgress();

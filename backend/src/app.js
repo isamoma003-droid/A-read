@@ -16,8 +16,10 @@ import categoryRoutes from './routes/categories.js';
 import paymentRoutes from './routes/payments.js';
 import progressRoutes from './routes/progress.js';
 import promotionRoutes from './routes/promotions.js';
+import quoteRoutes from './routes/quotes.js';
 import seoRoutes from './routes/seo.js';
 import shareRoutes from './routes/share.js';
+import systemRoutes from './routes/system.js';
 import ttsRoutes from './routes/tts.js';
 
 export function createApp() {
@@ -47,6 +49,8 @@ export function createApp() {
   app.use('/api/assignments', assignmentRoutes);
   app.use('/api/payments', paymentRoutes);
   app.use('/api/promotions', promotionRoutes);
+  app.use('/api/quotes', quoteRoutes);
+  app.use('/api/system', systemRoutes);
   app.use('/api', notFoundHandler);
   app.use('/share', shareRoutes);
   app.use(seoRoutes);

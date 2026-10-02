@@ -10,6 +10,7 @@ import { Bookmark } from '../models/Bookmark.js';
 import { Category } from '../models/Category.js';
 import { Progress } from '../models/Progress.js';
 import { Section, unpackParagraphs } from '../models/Section.js';
+import { isAdmin } from '../models/User.js';
 import {
   attachAudiobook,
   createBook,
@@ -20,6 +21,7 @@ import {
 } from '../services/books.js';
 import { deleteNarration, isNarrating, startNarration, stopNarration } from '../services/narration.js';
 import { isPremium, lockedError, lockedFor, lockedSectionsFor, purchasedBookIds } from '../services/premium.js';
+import { getSettings } from '../services/settings.js';
 import { badRequest, forbidden, notFound, unauthorized } from '../utils/httpError.js';
 
 const router = Router();
@@ -29,6 +31,12 @@ router.use(optionalAuth);
 
 function signedIn(req, _res, next) {
   if (!req.user) throw unauthorized('Sign in to read and listen');
+  next();
+}
+
+// A super admin can limit uploads to admins (checked before the file is received).
+async function mayUpload(req, _res, next) {
+  if (!isAdmin(req.user) && (await getSettings()).uploads === 'admins') throw forbidden('Only admins can add books right now');
   next();
 }
 
@@ -160,7 +168,7 @@ async function checkCategory(id) {
   return id || undefined;
 }
 
-router.post('/', signedIn, uploadBook, validate(createSchema), async (req, res) => {
+router.post('/', signedIn, mayUpload, uploadBook, validate(createSchema), async (req, res) => {
   const fields = { ...req.valid.body, category: await checkCategory(req.valid.body.category) };
   const book = await createBook({ user: req.user, files: req.files, fields });
   await book.populate([{ path: 'uploadedBy', select: 'name' }, { path: 'category', select: 'name slug' }]);

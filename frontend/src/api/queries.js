@@ -26,6 +26,9 @@ export const keys = {
   adminPayments: (status) => ['admin', 'payments', status],
   adminPremium: ['admin', 'premium'],
   bookPremium: (id) => ['admin', 'premium', id],
+  systemConfig: ['system', 'config'],
+  systemStatus: ['admin', 'system'],
+  adminQuotes: ['admin', 'quotes'],
 };
 
 function toQuery(params) {
@@ -175,3 +178,11 @@ export const useAdminPremium = () => useQuery({ queryKey: keys.adminPremium, que
 
 export const useBookPremium = (id) =>
   useQuery({ queryKey: keys.bookPremium(id), queryFn: () => api(`/admin/books/${id}/premium`).then((r) => r.premium), enabled: Boolean(id) });
+
+// Site settings a super admin controls (sign-ups, uploads, quote popup, announcement).
+export const useSystemConfig = () =>
+  useQuery({ queryKey: keys.systemConfig, queryFn: () => api('/system/config'), staleTime: 5 * 60 * 1000, retry: false });
+
+export const useSystemStatus = () => useQuery({ queryKey: keys.systemStatus, queryFn: () => api('/system/status') });
+
+export const useAdminQuotes = () => useQuery({ queryKey: keys.adminQuotes, queryFn: () => api('/quotes').then((r) => r.quotes) });

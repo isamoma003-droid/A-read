@@ -1,6 +1,12 @@
 import bcrypt from 'bcryptjs';
 import mongoose from '../config/mongoose.js';
 
+// Lowest to highest. Admins run the library; super admins also manage admins and site settings.
+export const ROLES = ['user', 'admin', 'superadmin'];
+export const isAdmin = (user) => user?.role === 'admin' || user?.role === 'superadmin';
+export const isSuperAdmin = (user) => user?.role === 'superadmin';
+export const roleRank = (role) => ROLES.indexOf(role);
+
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true, maxlength: 80 },
@@ -13,7 +19,7 @@ const userSchema = new mongoose.Schema(
     emailVerified: Boolean,
     verifyTokenHash: { type: String, select: false },
     verifyTokenExpires: { type: Date, select: false },
-    role: { type: String, enum: ['user', 'admin'], default: 'user' },
+    role: { type: String, enum: ROLES, default: 'user' },
   },
   { timestamps: true },
 );

@@ -15,8 +15,12 @@ A shared book library where people upload books and then **read them on screen o
 - **Premium books**: admins pick books to sell, set a price, and choose which chapters stay locked (for example, "first 3 chapters free, lock the rest"). Readers see every chapter title, read the free ones, and pay once by M-Pesa to unlock the whole book on all their devices. The uploader and admins can always read everything.
 - **Batch uploads** of up to 20 books at a time, up to 100 MB each, even on Cloudinary's free plan (large files are stored in parts).
 - **Share** any book to WhatsApp, Telegram, Facebook, X, email or a copied link, with a title-and-cover preview.
-- **Admin panel** (`/admin`): library stats, user management (promote/demote admins, delete accounts), book moderation, categories, and premium books with what each has sold.
-- **Support popups + M-Pesa**: admins schedule a "support us" popup (start and end time, optional daily hours, audience, how often each reader sees it, and whether it closes itself after N seconds). It sits in a corner and never blocks reading. The **Support** page (`/support`) takes M-Pesa payments by STK Push to your till, and admins see every payment and the total raised per popup.
+- **Admin panel** (`/admin`): library stats, readers (remove accounts), book moderation, categories, premium books with what each has sold, and quotes. Super admins also choose roles and get the **System** tab.
+- **Support popups + M-Pesa**: admins schedule a "support us" popup (start and end time, optional daily hours, audience, how often each reader sees it, and whether it closes itself after N seconds). The **Support** page (`/support`) takes M-Pesa payments by STK Push to your till, and admins see every payment and the total raised per popup.
+- **Book quotes**: each time someone opens the app, a quote from a book appears. Every visitor sees each quote once before any comes back, and never two from the same book in a row. It starts with 42 classic quotes from 34 public-domain books; admins add their own (optionally linked to a book in the library, with a "Read this book" button).
+- **Centred popups**: the support popup, the quote and the Share box all open in the middle of the screen, one at a time (a popup waits while another is open). Escape, the X or a click outside closes them. None appear inside the reader.
+- **Super admin**: the accounts in `SUPER_ADMIN_EMAILS` run the whole system. They do everything admins do, and only they can change roles (reader, admin, super admin) or remove admins. **Admin → System** holds site settings (sign-ups open or closed, who can upload, the quote popup, an announcement at the top of every page) and a health check of every connected service.
+- **ISA Tech Hub wake-up**: each time the app opens (or comes back after 5 minutes away), it calls `/api/system/wake`. That wakes the API, and the API wakes ISA Tech Hub (at most once a minute), so a reader paying by M-Pesa doesn't wait for a sleeping server.
 
 - **Required reading**: admins assign books to everyone or to chosen readers, with a due date and a note (optionally emailed). Readers get a Required reading list; admins see who has finished.
 - **Accounts**: email sign-up with a confirmation link (sent through Brevo), or **Sign in with Google**.
@@ -81,7 +85,8 @@ cp frontend/.env.example frontend/.env   # optional, only needed in production
 | `MONGODB_URI` | Your MongoDB connection string |
 | `JWT_SECRET` | A long random string: `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
 | `CLOUDINARY_URL` | Cloudinary Dashboard → **API Keys** → copy the `cloudinary://…` environment variable |
-| `ADMIN_EMAILS` | Comma-separated emails that can edit or delete any book |
+| `ADMIN_EMAILS` | Comma-separated emails that become admins (manage books, categories, premium books, quotes, popups, payments, readers) |
+| `SUPER_ADMIN_EMAILS` | Comma-separated emails of super admins, who also manage admins and site settings. Set at least one: without a super admin, nobody can change roles |
 | `CLIENT_ORIGIN` | The frontend URL(s) allowed by CORS (default `http://localhost:5173`) |
 | `FRONTEND_URL` | Optional. Where shared links send people (defaults to the first `CLIENT_ORIGIN`) |
 
@@ -181,7 +186,7 @@ npm test     # unit tests: text splitting, PDF/EPUB/TXT extraction, SSML chunkin
 MONGODB_URI_TEST=mongodb://127.0.0.1:27017/a-read-test npm test   # also runs the API tests
 ```
 
-The API tests drive the real Express app against a real database, with Cloudinary and Google stubbed out. They cover auth, uploads of all three formats, search and filters, permissions, progress, bookmarks, audiobooks, narration jobs, deletion, support popups, M-Pesa payments, both direct (Daraja is stubbed) and through ISA Tech Hub (a stand-in Hub server), categories, and premium books (locking, file renaming, unlocking by payment). **Use a throwaway database:** the tests drop it.
+The API tests drive the real Express app against a real database, with Cloudinary and Google stubbed out. They cover auth, uploads of all three formats, search and filters, permissions, progress, bookmarks, audiobooks, narration jobs, deletion, support popups, M-Pesa payments, both direct (Daraja is stubbed) and through ISA Tech Hub (a stand-in Hub server), categories, premium books (locking, file renaming, unlocking by payment), super admin roles and site settings, book quotes (no repeats, a different book each time) and waking ISA Tech Hub. **Use a throwaway database:** the tests drop it.
 
 ```bash
 npm run lint   # frontend ESLint (React hooks rules)
@@ -214,8 +219,12 @@ All endpoints except register/login need `Authorization: Bearer <token>`.
 | `GET / POST / DELETE /api/books/:id/narration` (`?purge=true` deletes audio) | Cloud narration status, start/resume, stop |
 | `GET /api/tts/status`, `GET /api/tts/voices?language=en` | Narration availability and voices |
 | `GET /api/progress`, `GET / PUT /api/progress/:bookId` | Continue reading; per-book position |
-| `GET /api/admin/stats`, `GET /api/admin/users?q=`, `PATCH / DELETE /api/admin/users/:id` | Admin only: stats, roles, account removal (`?deleteBooks=true`) |
+| `GET /api/admin/stats`, `GET /api/admin/users?q=`, `PATCH / DELETE /api/admin/users/:id` | Admin only: stats, readers, account removal (`?deleteBooks=true`). Changing a role, or removing an admin, needs a super admin |
 | `GET /api/categories` (public), `POST /api/categories`, `PATCH / DELETE /api/categories/:id` | Categories with book counts; admin only to change |
+| `POST /api/quotes/next` (public; body `seen`, `lastBook`) | The quote to show now: not seen yet, from a different book than the last |
+| `GET / POST /api/quotes`, `PATCH / DELETE /api/quotes/:id`, `POST /api/quotes/classics` | Admin only: manage quotes; add the built-in classics back |
+| `GET /api/system/config` (public), `GET /api/system/wake` (public) | Site settings the app needs; wake the API and ISA Tech Hub |
+| `GET /api/system/status`, `PUT /api/system/settings` | Super admin only: service health and counts; change site settings |
 | `GET /api/admin/premium`, `GET / PUT /api/admin/books/:id/premium` (`enabled`, `price`, `lockedSections`) | Admin only: premium books and sales; one book's price and locked chapters |
 | `GET /share/books/:id` (public) | Link-preview page that redirects to the book |
 | `GET / POST /api/books/:id/bookmarks`, `PATCH / DELETE /api/bookmarks/:id` | Private bookmarks |

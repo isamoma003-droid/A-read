@@ -1,4 +1,5 @@
 import mongoose from '../config/mongoose.js';
+import { isAdmin } from './User.js';
 
 const { Schema } = mongoose;
 
@@ -115,7 +116,7 @@ bookSchema.index({ tags: 1 });
 
 bookSchema.methods.canEdit = function canEdit(user) {
   if (!user) return false;
-  return user.role === 'admin' || String(this.uploadedBy?._id ?? this.uploadedBy) === String(user._id);
+  return isAdmin(user) || String(this.uploadedBy?._id ?? this.uploadedBy) === String(user._id);
 };
 
 export const Book = mongoose.model('Book', bookSchema);

@@ -3,7 +3,9 @@ import { CheckCircle2, CircleAlert, FileText, ImagePlus, LoaderCircle, Plus, Upl
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { upload } from '../api/client.js';
-import { keys, useCategories } from '../api/queries.js';
+import { keys, useCategories, useSystemConfig } from '../api/queries.js';
+import { useAuth } from '../context/AuthContext.jsx';
+import { isAdmin } from '../utils/roles.js';
 import CategorySelect from '../components/CategorySelect.jsx';
 import FileDrop from '../components/FileDrop.jsx';
 import { ErrorMessage, ProgressBar } from '../components/Feedback.jsx';
@@ -27,6 +29,8 @@ export default function UploadPage() {
   const [error, setError] = useState(null);
   const [running, setRunning] = useState(false);
   const { data: categories } = useCategories();
+  const { user } = useAuth();
+  const { data: system } = useSystemConfig();
 
   const single = items.length === 1;
   const finished = items.length > 0 && items.every((i) => i.status === 'done');
@@ -92,6 +96,18 @@ export default function UploadPage() {
     queryClient.invalidateQueries({ queryKey: keys.categories });
     if (single && created.length === 1) navigate(`/books/${created[0].id}`);
   };
+
+  if (system?.uploads === 'admins' && !isAdmin(user)) {
+    return (
+      <div className="narrow">
+        <header className="page-header">
+          <h1 className="section-title">Upload books</h1>
+        </header>
+        <p className="notice">Only admins can add books to the library right now.</p>
+        <Link to="/">Back to the library</Link>
+      </div>
+    );
+  }
 
   return (
     <div className="narrow">

@@ -3,6 +3,7 @@
 // Cloudinary calls are stubbed, so no Cloudinary account is needed.
 process.env.NODE_ENV ||= 'test'; // must be set before src/ modules load (they're imported in before())
 process.env.ADMIN_EMAILS = 'alice@example.com';
+process.env.SUPER_ADMIN_EMAILS = 'sam@example.com,sue@example.com';
 process.env.CLOUDINARY_MAX_FILE_MB = '0.004'; // ~4 KB parts so the chunking path is exercised
 process.env.FRONTEND_URL = 'https://a-read.example';
 process.env.GOOGLE_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
@@ -237,11 +238,10 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal(bobUser.books, 2);
     const me = users.find((u) => u.email === 'alice@example.com');
     assert.equal(me.role, 'admin');
-    assert.equal((await api(`/admin/users/${me.id}`, { token: alice, method: 'PATCH', body: { role: 'user' } })).status, 400);
-    let res = await api(`/admin/users/${bobUser.id}`, { token: alice, method: 'PATCH', body: { role: 'admin' } });
-    assert.equal(res.body.user.role, 'admin');
-    res = await api(`/admin/users/${bobUser.id}`, { token: alice, method: 'PATCH', body: { role: 'user' } });
-    assert.equal(res.body.user.role, 'user');
+    // Only super admins change roles (see the super admin test).
+    const res = await api(`/admin/users/${bobUser.id}`, { token: alice, method: 'PATCH', body: { role: 'admin' } });
+    assert.equal(res.status, 403);
+    assert.match(res.body.error, /super admin/);
   });
 
   test('guests can browse the catalogue but not read', async () => {
@@ -1082,5 +1082,174 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal(res.body.book.unlocked, true);
     assert.equal((await api('/books?access=premium')).body.total, 0);
     assert.ok((await api('/admin/premium', { token: alice })).body.books.some((b) => b.id === book.id && !b.premium.enabled));
+  });
+
+  let sam;
+
+  test('super admins manage roles and site settings', async () => {
+    let res = await api('/auth/register', { method: 'POST', body: { name: 'Sam', email: 'sam@example.com', password: 'password7' } });
+    sam = res.body.token;
+    assert.equal(res.body.user.role, 'superadmin', 'SUPER_ADMIN_EMAILS makes the account a super admin');
+    res = await api('/auth/login', { method: 'POST', body: { email: 'sam@example.com', password: 'password7' } });
+    assert.equal(res.body.user.role, 'superadmin');
+
+    // Super admins pass every admin check.
+    assert.equal((await api('/admin/stats', { token: sam })).status, 200);
+    assert.equal((await api('/admin/premium', { token: sam })).status, 200);
+
+    // Roles: only super admins change them, never their own.
+    const users = (await api('/admin/users', { token: sam })).body.users;
+    const id = (email) => users.find((u) => u.email === email).id;
+    assert.equal((await api(`/admin/users/${id('sam@example.com')}`, { token: sam, method: 'PATCH', body: { role: 'user' } })).status, 400);
+    res = await api(`/admin/users/${id('carol@example.com')}`, { token: sam, method: 'PATCH', body: { role: 'admin' } });
+    assert.equal(res.body.user.role, 'admin');
+    assert.equal((await api(`/admin/users/${id('alice@example.com')}`, { token: carol, method: 'PATCH', body: { role: 'user' } })).status, 403);
+    // Admins remove readers, but only a super admin removes an admin.
+    assert.equal((await api(`/admin/users/${id('carol@example.com')}`, { token: alice, method: 'DELETE' })).status, 403);
+    res = await api(`/admin/users/${id('carol@example.com')}`, { token: sam, method: 'PATCH', body: { role: 'user' } });
+    assert.equal(res.body.user.role, 'user');
+    assert.equal((await api('/admin/stats', { token: carol })).status, 403);
+
+    // System status and settings are for super admins only.
+    assert.equal((await api('/system/status', { token: alice })).status, 403);
+    assert.equal((await api('/system/settings', { token: alice, method: 'PUT', body: { signupsOpen: false } })).status, 403);
+    res = await api('/system/status', { token: sam });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.services.find((s) => s.id === 'database').ok, true);
+    assert.equal(res.body.counts.superAdmins, 1);
+    assert.deepEqual((await api('/system/config')).body, { signupsOpen: true, uploads: 'everyone', quotesEnabled: true, announcement: '' });
+
+    const settings = { signupsOpen: false, uploads: 'admins', quotesEnabled: false, announcement: '  Maintenance tonight at 10 pm  ' };
+    res = await api('/system/settings', { token: sam, method: 'PUT', body: settings });
+    assert.deepEqual(res.body.settings, { ...settings, announcement: 'Maintenance tonight at 10 pm' });
+    assert.equal((await api('/system/config')).body.announcement, 'Maintenance tonight at 10 pm');
+
+    // Closed sign-ups: new accounts are refused (by email or Google), except configured admins.
+    res = await api('/auth/register', { method: 'POST', body: { name: 'Newbie', email: 'newbie@example.com', password: 'password8' } });
+    assert.equal(res.status, 403);
+    assert.match(res.body.error, /sign-ups are closed/);
+    assert.equal((await api('/auth/google', { method: 'POST', body: { credential: 'g-9|newbie@example.com|yes|padding-padding' } })).status, 403);
+    res = await api('/auth/register', { method: 'POST', body: { name: 'Sue', email: 'sue@example.com', password: 'password9' } });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.user.role, 'superadmin');
+    assert.equal((await api('/auth/login', { method: 'POST', body: { email: 'erin@example.com', password: 'password6' } })).status, 200, 'members still sign in');
+
+    // Uploads limited to admins.
+    res = await api('/books', { token: carol, method: 'POST', form: bookForm('nope.txt', 'Not today.') });
+    assert.equal(res.status, 403);
+    assert.match(res.body.error, /Only admins/);
+    res = await api('/books', { token: alice, method: 'POST', form: bookForm('admin-only.txt', 'Admins can still add books.') });
+    assert.equal(res.status, 201);
+
+    res = await api('/system/settings', { token: sam, method: 'PUT', body: { signupsOpen: true, uploads: 'everyone', quotesEnabled: true, announcement: '' } });
+    assert.deepEqual(res.body.settings, { signupsOpen: true, uploads: 'everyone', quotesEnabled: true, announcement: '' });
+    assert.equal((await api('/system/settings', { token: sam, method: 'PUT', body: { uploads: 'nobody' } })).status, 400);
+
+    // Accounts listed in SUPER_ADMIN_EMAILS are promoted at startup too.
+    const { User } = await import('../src/models/User.js');
+    const { syncConfiguredRoles } = await import('../src/services/roles.js');
+    await User.updateOne({ email: 'sue@example.com' }, { $set: { role: 'user' } });
+    assert.equal(await syncConfiguredRoles(), 1);
+    assert.equal((await User.findOne({ email: 'sue@example.com' })).role, 'superadmin');
+  });
+
+  test('book quotes appear once each and never from the same book twice in a row', async () => {
+    const { seedClassicQuotes } = await import('../src/services/quotes.js');
+    const { CLASSIC_QUOTES } = await import('../src/data/classicQuotes.js');
+    assert.equal(await seedClassicQuotes(), CLASSIC_QUOTES.length, 'the classics fill an empty list on first start');
+    assert.equal(await seedClassicQuotes(), 0, 'and only once');
+
+    // A visitor opens the app once per quote: every quote shows once, books never repeat back to back.
+    let seen = [];
+    let lastBook = null;
+    const shown = [];
+    for (let i = 0; i < CLASSIC_QUOTES.length; i++) {
+      const res = await api('/quotes/next', { method: 'POST', body: { seen, lastBook } });
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      const { quote, reset } = res.body;
+      assert.equal(reset, false, `round ended early at ${i}`);
+      assert.notEqual(quote.bookKey, lastBook, `quote ${i} came from the same book as the one before`);
+      shown.push(quote);
+      seen.push(quote.id);
+      lastBook = quote.bookKey;
+    }
+    assert.equal(new Set(shown.map((q) => q.id)).size, CLASSIC_QUOTES.length, 'no quote repeats in a round');
+    let res = await api('/quotes/next', { method: 'POST', body: { seen, lastBook } });
+    assert.equal(res.body.reset, true, 'once every quote has been seen, a new round starts');
+    assert.notEqual(res.body.quote.bookKey, lastBook);
+    assert.equal(typeof res.body.quote.text, 'string');
+    assert.ok(res.body.quote.bookTitle);
+
+    // Admins manage the list; readers can't.
+    assert.equal((await api('/quotes', { token: carol })).status, 403);
+    assert.equal((await api('/quotes', { token: carol, method: 'POST', body: { text: 'Hi', bookTitle: 'X' } })).status, 403);
+    assert.match((await api('/quotes', { token: alice, method: 'POST', body: { text: 'No book given.' } })).body.error, /Which book/);
+    res = await api('/quotes', { token: alice, method: 'POST', body: { text: 'Water boils at 100 degrees.', bookId: freeBook.id } });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const linked = res.body.quote;
+    assert.equal(linked.bookTitle, freeBook.title, 'a library book gives its title');
+    assert.equal(linked.book.id, freeBook.id);
+    res = await api(`/quotes/${linked.id}`, { token: alice, method: 'PATCH', body: { enabled: false } });
+    assert.equal(res.body.quote.enabled, false);
+    // Only that quote is left unseen, but it's switched off: a new round starts instead.
+    res = await api('/quotes/next', { method: 'POST', body: { seen, lastBook } });
+    assert.notEqual(res.body.quote.id, linked.id);
+    assert.equal((await api('/quotes', { token: sam })).body.quotes.length, CLASSIC_QUOTES.length + 1);
+    assert.equal((await api(`/quotes/${linked.id}`, { token: alice, method: 'DELETE' })).status, 204);
+
+    // A deleted classic can be brought back.
+    await api(`/quotes/${shown[0].id}`, { token: alice, method: 'DELETE' });
+    assert.equal((await api('/quotes/classics', { token: alice, method: 'POST' })).body.added, 1);
+
+    // A super admin can switch the popup off.
+    await api('/system/settings', { token: sam, method: 'PUT', body: { quotesEnabled: false } });
+    assert.equal((await api('/quotes/next', { method: 'POST', body: {} })).body.quote, null);
+    await api('/system/settings', { token: sam, method: 'PUT', body: { quotesEnabled: true } });
+  });
+
+  test('opening the app wakes ISA Tech Hub', async () => {
+    const { env } = await import('../src/config/env.js');
+    const { hubWaking, resetHubWake } = await import('../src/services/hub.js');
+    assert.deepEqual((await api('/system/wake')).body, { ok: true, hub: 'off' }, 'nothing to wake without the Hub settings');
+
+    let hits = 0;
+    let answer = 200;
+    const fakeHub = http.createServer((req, res) => {
+      if (req.url === '/v1/config') hits++;
+      res.writeHead(answer, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(answer === 200 ? { platform: { name: 'A-Read' }, till: { kind: 'till', payNumber: '5557777', active: true } } : { error: 'Invalid API key' }));
+    });
+    await new Promise((resolve) => fakeHub.listen(0, '127.0.0.1', resolve));
+    const saved = { ...env.hub };
+    Object.assign(env.hub, { url: `http://127.0.0.1:${fakeHub.address().port}`, apiKey: 'isa_sk_test', webhookSecret: 'whsec_test' });
+    try {
+      resetHubWake();
+      let res = await api('/system/wake');
+      assert.equal(res.status, 202);
+      assert.equal(res.body.hub, 'waking');
+      await hubWaking();
+      assert.equal(hits, 1);
+      // Opened again a moment later: the Hub is awake, so it isn't asked again.
+      assert.equal((await api('/system/wake')).body.hub, 'awake');
+      assert.equal(hits, 1);
+      res = await api('/system/status', { token: sam });
+      assert.equal(res.body.hub.enabled, true);
+      assert.equal(res.body.hub.last.ok, true);
+
+      // A Hub that refuses the key is reported to super admins in plain words.
+      resetHubWake();
+      answer = 401;
+      await api('/system/wake');
+      await hubWaking();
+      res = await api('/system/status', { token: sam });
+      assert.equal(res.body.hub.last.ok, false);
+      assert.match(res.body.hub.last.error, /rejected ISA_HUB_API_KEY/);
+      await api('/system/wake');
+      assert.equal(hits, 2, 'a failed wake is retried after a pause, not on every open');
+    } finally {
+      Object.assign(env.hub, saved);
+      resetHubWake();
+      fakeHub.close();
+    }
   });
 });

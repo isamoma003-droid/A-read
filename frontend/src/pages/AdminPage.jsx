@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BookOpen, Crown, Database, Headphones, Search, Shield, ShieldOff, Trash2, Users } from 'lucide-react';
+import { BookOpen, Crown, Database, Headphones, Search, Shield, Trash2, Users } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
@@ -8,6 +8,7 @@ import BookCover from '../components/BookCover.jsx';
 import { ErrorMessage, Spinner } from '../components/Feedback.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { FORMAT_LABELS, formatBytes, formatKes, formatNumber, timeAgo } from '../utils/format.js';
+import { ROLE_LABELS, isAdmin, isSuperAdmin } from '../utils/roles.js';
 import { useDebounced } from '../utils/useDebounced.js';
 import { useDocumentTitle } from '../utils/useDocumentTitle.js';
 import AdminAssignments from './AdminAssignments.jsx';
@@ -15,6 +16,8 @@ import AdminCategories from './AdminCategories.jsx';
 import AdminPayments from './AdminPayments.jsx';
 import AdminPremium from './AdminPremium.jsx';
 import AdminPromotions from './AdminPromotions.jsx';
+import AdminQuotes from './AdminQuotes.jsx';
+import AdminSystem from './AdminSystem.jsx';
 
 const TABS = [
   ['overview', 'Overview'],
@@ -23,18 +26,22 @@ const TABS = [
   ['books', 'Books'],
   ['categories', 'Categories'],
   ['premium', 'Premium'],
+  ['quotes', 'Quotes'],
   ['promotions', 'Popups'],
   ['payments', 'Payments'],
+  // Super admins only.
+  ['system', 'System'],
 ];
 
 export default function AdminPage() {
   const { user } = useAuth();
   // The tab lives in the URL (/admin?tab=premium&book=…) so pages can link straight to it.
   const [params, setParams] = useSearchParams();
-  const tab = TABS.some(([id]) => id === params.get('tab')) ? params.get('tab') : 'overview';
+  const tabs = TABS.filter(([id]) => id !== 'system' || isSuperAdmin(user));
+  const tab = tabs.some(([id]) => id === params.get('tab')) ? params.get('tab') : 'overview';
   const setTab = (id) => setParams(id === 'overview' ? {} : { tab: id }, { replace: true });
   useDocumentTitle('Admin');
-  if (user.role !== 'admin') return <Navigate to="/" replace />;
+  if (!isAdmin(user)) return <Navigate to="/" replace />;
 
   return (
     <div className="admin">
@@ -42,10 +49,10 @@ export default function AdminPage() {
         <p className="eyebrow">
           <Shield size={12} aria-hidden="true" /> Admin
         </p>
-        <h1 className="section-title">Admin panel</h1>
+        <h1 className="section-title">{isSuperAdmin(user) ? 'Super admin panel' : 'Admin panel'}</h1>
       </header>
       <div className="tabs" role="tablist">
-        {TABS.map(([id, label]) => (
+        {tabs.map(([id, label]) => (
           <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>
             {label}
           </button>
@@ -59,6 +66,8 @@ export default function AdminPage() {
       {tab === 'premium' && <AdminPremium />}
       {tab === 'promotions' && <AdminPromotions />}
       {tab === 'payments' && <AdminPayments />}
+      {tab === 'quotes' && <AdminQuotes />}
+      {tab === 'system' && <AdminSystem />}
     </div>
   );
 }
@@ -116,7 +125,15 @@ function UsersTab({ me }) {
     }
   };
 
-  const setRole = (u, role) => run(u.id, () => api(`/admin/users/${u.id}`, { method: 'PATCH', body: { role } }));
+  const setRole = (u, role) => {
+    const promoting = role === 'superadmin' ? ' They will be able to manage every admin and the site settings.' : '';
+    if (window.confirm(`Make ${u.name} ${ROLE_LABELS[role].toLowerCase()}?${promoting}`)) {
+      run(u.id, () => api(`/admin/users/${u.id}`, { method: 'PATCH', body: { role } }));
+    }
+  };
+  // Super admins manage everyone; admins can only remove readers.
+  const manageRoles = isSuperAdmin(me);
+  const canRemove = (u) => u.id !== me.id && (manageRoles || u.role === 'user');
   const remove = (u) => {
     if (!window.confirm(`Delete ${u.name}'s account (${u.email})? Their progress and bookmarks are removed.`)) return;
     const deleteBooks = u.books > 0 && window.confirm(`Also delete the ${u.books} book(s) they uploaded? Cancel keeps them in the library.`);
@@ -129,6 +146,10 @@ function UsersTab({ me }) {
         <Search size={18} aria-hidden="true" />
         <input type="search" placeholder="Search by name or email" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search users" />
       </label>
+      <p className="muted small">
+        <Shield size={12} aria-hidden="true" />{' '}
+        {manageRoles ? 'As a super admin you choose who is a reader, an admin or a super admin.' : 'Only a super admin can change roles or remove admins.'}
+      </p>
       <ErrorMessage error={error || actionError} />
       {isPending ? (
         <Spinner label="Loading users…" />
@@ -158,27 +179,26 @@ function UsersTab({ me }) {
                     </div>
                   </td>
                   <td>
-                    <span className={`badge ${u.role === 'admin' ? 'badge-accent' : ''}`}>{u.role}</span>
+                    {manageRoles && u.id !== me.id ? (
+                      <select className="role-select" value={u.role} disabled={busy === u.id} onChange={(e) => setRole(u, e.target.value)} aria-label={`Role of ${u.name}`}>
+                        {Object.entries(ROLE_LABELS).map(([role, label]) => (
+                          <option key={role} value={role}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className={`badge ${u.role === 'superadmin' ? 'badge-premium' : u.role === 'admin' ? 'badge-accent' : ''}`}>{ROLE_LABELS[u.role] || u.role}</span>
+                    )}
                   </td>
                   <td className="num">{u.books}</td>
                   <td className="muted small">{timeAgo(u.createdAt)}</td>
                   <td className="actions">
-                    {u.id !== me.id && (
-                      <>
-                        {u.role === 'admin' ? (
-                          <button type="button" className="button button-small button-ghost" disabled={busy === u.id} onClick={() => setRole(u, 'user')}>
-                            <ShieldOff size={14} aria-hidden="true" /> Remove admin
-                          </button>
-                        ) : (
-                          <button type="button" className="button button-small button-ghost" disabled={busy === u.id} onClick={() => setRole(u, 'admin')}>
-                            <Shield size={14} aria-hidden="true" /> Make admin
-                          </button>
-                        )}
-                        <button type="button" className="icon-button danger" disabled={busy === u.id} onClick={() => remove(u)} title="Delete account">
-                          <Trash2 size={16} />
-                          <span className="sr-only">Delete {u.name}</span>
-                        </button>
-                      </>
+                    {canRemove(u) && (
+                      <button type="button" className="icon-button danger" disabled={busy === u.id} onClick={() => remove(u)} title="Delete account">
+                        <Trash2 size={16} />
+                        <span className="sr-only">Delete {u.name}</span>
+                      </button>
                     )}
                   </td>
                 </tr>

@@ -4,7 +4,7 @@ const { Schema } = mongoose;
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-// A "support us" popup that admins schedule. It never blocks reading: readers can always close it.
+// A "support us" popup that admins schedule. It never appears inside the reader, and readers can always close it.
 const promotionSchema = new Schema(
   {
     title: { type: String, required: true, trim: true, maxlength: 120 },

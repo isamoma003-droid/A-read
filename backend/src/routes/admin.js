@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { env } from '../config/env.js';
-import { requireAdmin } from '../middleware/admin.js';
+import { requireAdmin, requireSuperAdmin } from '../middleware/admin.js';
 import { requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { Assignment } from '../models/Assignment.js';
@@ -9,10 +9,10 @@ import { Book } from '../models/Book.js';
 import { Bookmark } from '../models/Bookmark.js';
 import { Payment } from '../models/Payment.js';
 import { Progress } from '../models/Progress.js';
-import { User } from '../models/User.js';
+import { ROLES, User, isSuperAdmin } from '../models/User.js';
 import { deleteBook } from '../services/books.js';
 import { secureBookFiles } from '../services/premium.js';
-import { badRequest, notFound } from '../utils/httpError.js';
+import { badRequest, forbidden, notFound } from '../utils/httpError.js';
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -22,7 +22,7 @@ const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 router.get('/stats', async (_req, res) => {
   const [users, admins, books, formats, storage, narrated, audiobooks, recentUsers, premium] = await Promise.all([
     User.countDocuments(),
-    User.countDocuments({ role: 'admin' }),
+    User.countDocuments({ role: { $in: ['admin', 'superadmin'] } }),
     Book.countDocuments(),
     Book.aggregate([{ $group: { _id: '$format', count: { $sum: 1 } } }]),
     Book.find().select('file.bytes audiobook.bytes wordCount').lean(),
@@ -67,9 +67,10 @@ router.get('/users', validate(listSchema, 'query'), async (req, res) => {
   res.json({ users: users.map((u) => ({ ...u.toPublic(), books: byUser.get(String(u._id)) || 0 })) });
 });
 
-const roleSchema = z.object({ role: z.enum(['user', 'admin']) });
+const roleSchema = z.object({ role: z.enum(ROLES) });
 
-router.patch('/users/:id', validate(roleSchema), async (req, res) => {
+// Only super admins give or take away roles (including making other super admins).
+router.patch('/users/:id', requireSuperAdmin, validate(roleSchema), async (req, res) => {
   if (String(req.params.id) === String(req.user._id)) throw badRequest("You can't change your own role");
   const user = await User.findById(req.params.id);
   if (!user) throw notFound('User not found');
@@ -84,6 +85,7 @@ router.delete('/users/:id', async (req, res) => {
   if (String(req.params.id) === String(req.user._id)) throw badRequest("You can't delete your own account here");
   const user = await User.findById(req.params.id);
   if (!user) throw notFound('User not found');
+  if (user.role !== 'user' && !isSuperAdmin(req.user)) throw forbidden('Only a super admin can remove an admin');
   if (req.query.deleteBooks === 'true') {
     for (const book of await Book.find({ uploadedBy: user._id })) await deleteBook(book);
   }

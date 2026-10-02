@@ -62,7 +62,7 @@ export default function AdminPromotions() {
           <Megaphone size={18} aria-hidden="true" /> Support popups
         </h2>
         <p className="muted small">
-          Popups appear in a corner of the library and book pages, never inside the reader, and readers can always close them.
+          Popups appear in the middle of the screen on the library and book pages (never inside the reader), one at a time, and readers can always close them.
         </p>
         <ErrorMessage error={error || actionError} />
         {isPending && <Spinner label="Loading…" />}

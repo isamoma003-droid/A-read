@@ -35,6 +35,7 @@ import FileDrop from '../components/FileDrop.jsx';
 import { ErrorMessage, PageLoader, ProgressBar, Spinner } from '../components/Feedback.jsx';
 import NotFoundPage from './NotFoundPage.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
+import { isAdmin } from '../utils/roles.js';
 import { useDocumentTitle } from '../utils/useDocumentTitle.js';
 import {
   FORMAT_LABELS,
@@ -143,7 +144,7 @@ export default function BookPage() {
                 <Pencil size={16} aria-hidden="true" /> {editing ? 'Close editor' : 'Edit'}
               </button>
             )}
-            {user?.role === 'admin' && (
+            {isAdmin(user) && (
               <Link to={`/admin?tab=premium&book=${book.id}`} className="button button-ghost">
                 <Crown size={16} aria-hidden="true" /> Premium settings
               </Link>
@@ -209,7 +210,7 @@ function PremiumPanel({ book }) {
         <p className="premium-unlocked">
           <LockOpen size={16} aria-hidden="true" />
           {book.canEdit
-            ? `Readers pay ${formatKes(book.premium.price)} to open ${parts(locked)}. You can read everything because you ${user.role === 'admin' ? 'are an admin' : 'uploaded it'}.`
+            ? `Readers pay ${formatKes(book.premium.price)} to open ${parts(locked)}. You can read everything because you ${isAdmin(user) ? 'are an admin' : 'uploaded it'}.`
             : 'You unlocked this book. Every chapter is yours to read and listen to.'}
         </p>
       ) : (

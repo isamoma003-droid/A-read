@@ -63,6 +63,50 @@ export async function hubStatus() {
   }
 }
 
+// --- Waking the Hub ---------------------------------------------------------------------------
+// On Render's free plan the Hub sleeps when idle, and the first request after that takes up to a
+// minute. The app asks A-Read to wake it each time it opens, so the Hub is up by the time a
+// reader pays. Calls are spaced out: at most one a minute (15 seconds after a failure).
+
+const WAKE_EVERY_MS = 60_000;
+const WAKE_RETRY_MS = 15_000;
+// Long enough to sit through a cold start.
+const WAKE_TIMEOUT_MS = 90_000;
+let lastWake = null; // { at, ok, ms, error }
+let waking = null;
+
+/** Starts waking the Hub if it's due. Returns 'off' | 'waking' | 'awake' right away. */
+export function wakeHub() {
+  if (!hubEnabled()) return 'off';
+  if (waking) return 'waking';
+  if (lastWake && Date.now() - lastWake.at < (lastWake.ok ? WAKE_EVERY_MS : WAKE_RETRY_MS)) return lastWake.ok ? 'awake' : 'waking';
+  const started = Date.now();
+  const client = new IsaHub({ apiKey: env.hub.apiKey, baseUrl: env.hub.url, timeoutMs: WAKE_TIMEOUT_MS });
+  waking = client
+    .config()
+    .then(
+      (value) => {
+        cachedConfig = { value, expiresAt: Date.now() + 10 * 60_000 };
+        lastWake = { at: Date.now(), ok: true, ms: Date.now() - started };
+      },
+      (err) => {
+        lastWake = { at: Date.now(), ok: false, ms: Date.now() - started, error: explain(err) };
+        console.warn(`Waking ISA Tech Hub failed: ${lastWake.error}`);
+      },
+    )
+    .finally(() => {
+      waking = null;
+    });
+  return 'waking';
+}
+
+// For Admin → System, and for tests to wait on.
+export const hubWakeState = () => ({ waking: Boolean(waking), last: lastWake });
+export const hubWaking = () => waking ?? Promise.resolve();
+export const resetHubWake = () => {
+  lastWake = null;
+};
+
 export const verifyHubWebhook = (rawBody, signature) =>
   verifyWebhook({ secret: env.hub.webhookSecret, rawBody: rawBody ?? '', signature });
 

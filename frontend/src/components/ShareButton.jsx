@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
-import { Check, Copy, Mail, Share2 } from 'lucide-react';
+import { useState } from 'react';
+import { Check, Copy, Mail, Share2, X } from 'lucide-react';
+import CenteredDialog from './CenteredDialog.jsx';
+import { usePopupTurn } from './popupQueue.js';
 
 // Brand marks drawn inline (lucide doesn't ship brand logos).
 const WhatsAppIcon = () => (
@@ -32,22 +34,11 @@ export function shareLink(book) {
 export default function ShareButton({ book, className = 'button' }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const root = useRef(null);
+  // Opened by the reader, so it goes ahead of any popup that's waiting.
+  const turn = usePopupTurn(`share-${book.id}`, open, { first: true });
   const url = shareLink(book);
   const text = `Read “${book.title}”${book.author ? ` by ${book.author}` : ''} on A-Read`;
   const encoded = { url: encodeURIComponent(url), text: encodeURIComponent(text), both: encodeURIComponent(`${text}\n${url}`) };
-
-  useEffect(() => {
-    if (!open) return undefined;
-    const close = (event) => !root.current?.contains(event.target) && setOpen(false);
-    const onKey = (event) => event.key === 'Escape' && setOpen(false);
-    document.addEventListener('pointerdown', close);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', close);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
 
   const copy = async () => {
     try {
@@ -77,36 +68,42 @@ export default function ShareButton({ book, className = 'button' }) {
   ];
 
   return (
-    <div className="share" ref={root}>
-      <button type="button" className={className} onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-haspopup="true">
+    <>
+      <button type="button" className={className} onClick={() => setOpen(true)} aria-expanded={open} aria-haspopup="dialog">
         <Share2 size={16} aria-hidden="true" /> Share
       </button>
-      {open && (
-        <div className="share-menu" role="menu">
-          <p className="share-heading">Share this book</p>
-          <div className="share-grid">
-            {targets.map(({ name, icon: Icon, href, cls }) => (
-              <a key={name} href={href} target="_blank" rel="noopener noreferrer" className={`share-target ${cls}`} role="menuitem" onClick={() => setOpen(false)}>
-                <span className="share-icon">
-                  <Icon />
-                </span>
-                {name}
-              </a>
-            ))}
-          </div>
-          <div className="share-link">
-            <input value={url} readOnly aria-label="Share link" onFocus={(e) => e.target.select()} />
-            <button type="button" className="button button-small" onClick={copy}>
-              {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />} {copied ? 'Copied' : 'Copy'}
-            </button>
-          </div>
-          {typeof navigator.share === 'function' && (
-            <button type="button" className="button button-small button-block" onClick={nativeShare}>
-              More apps…
-            </button>
-          )}
+      <CenteredDialog open={open && turn} onClose={() => setOpen(false)} labelledBy={`share-title-${book.id}`} className="share-menu">
+        <div className="share-head">
+          <p className="share-heading" id={`share-title-${book.id}`}>
+            Share “{book.title}”
+          </p>
+          <button type="button" className="icon-button" onClick={() => setOpen(false)} title="Close">
+            <X size={18} />
+            <span className="sr-only">Close</span>
+          </button>
         </div>
-      )}
-    </div>
+        <div className="share-grid">
+          {targets.map(({ name, icon: Icon, href, cls }) => (
+            <a key={name} href={href} target="_blank" rel="noopener noreferrer" className={`share-target ${cls}`} onClick={() => setOpen(false)}>
+              <span className="share-icon">
+                <Icon />
+              </span>
+              {name}
+            </a>
+          ))}
+        </div>
+        <div className="share-link">
+          <input value={url} readOnly aria-label="Share link" onFocus={(e) => e.target.select()} />
+          <button type="button" className="button button-small" onClick={copy}>
+            {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />} {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+        {typeof navigator.share === 'function' && (
+          <button type="button" className="button button-small button-block" onClick={nativeShare}>
+            More apps…
+          </button>
+        )}
+      </CenteredDialog>
+    </>
   );
 }
