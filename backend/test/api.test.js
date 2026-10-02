@@ -1417,4 +1417,125 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
       fakeHub.close();
     }
   });
+
+  test('admins file existing books, and A-Read works out categories from the books themselves', async () => {
+    const repeat = (sentences, times) => Array.from({ length: times }, (_, i) => sentences[i % sentences.length]).join(' ');
+    const history = repeat(
+      [
+        'The empire sent a colonial army across the river in the early years of the century.',
+        'Historians still argue about the treaty that ended the long war between the two kingdoms.',
+        'The rebellion against the colonial government grew after the battle at the fort.',
+        'Independence came only after decades of resistance, and the old dynasty never returned.',
+      ],
+      40,
+    );
+    const faith = repeat(
+      [
+        'We pray to God each morning and give thanks for His grace and mercy.',
+        'The gospel teaches that faith and prayer bring the believer closer to the Lord.',
+        'In church the congregation sang a psalm before the sermon on salvation.',
+        'Scripture reminds us that the Holy Spirit guides those who worship in truth.',
+      ],
+      40,
+    );
+    const novel = repeat(
+      [
+        '“Where have you been?” she whispered, staring at the door.',
+        '“Nowhere,” he replied with a shrug, and smiled at the stranger by the fire.',
+        'She laughed, then glanced at the dark window and sighed.',
+        '“You never tell me anything,” she cried, and he nodded slowly.',
+      ],
+      40,
+    );
+    const bees = repeat(
+      [
+        'The bees left the hive at dawn to gather nectar from the acacia flowers.',
+        'A strong colony needs a healthy queen, plenty of comb and a dry hive box.',
+        'When the swarm settled on the branch, the keeper smoked the bees gently and moved them.',
+        'Harvest the honey only when most of the comb is capped with wax.',
+      ],
+      40,
+    );
+    const upload = async (name, text, fields = {}) => {
+      const res = await api('/books', { token: carol, method: 'POST', form: bookForm(name, `CHAPTER 1\n\n${text}`, fields) });
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+      return res.body.book;
+    };
+
+    // Common categories in one click (Science already covers "Science & Nature").
+    let res = await api('/categories/starters', { token: alice });
+    assert.ok(res.body.starters.includes('History'));
+    assert.ok(!res.body.starters.includes('Science & Nature'));
+    assert.equal((await api('/categories/starters', { token: carol })).status, 403);
+    res = await api('/categories/starters', { token: alice, method: 'POST', body: { names: ['History', 'Religion & Spirituality', 'Fiction'] } });
+    assert.equal(res.status, 201);
+    assert.deepEqual(res.body.categories.map((c) => c.name).sort(), ['Fiction', 'History', 'Religion & Spirituality']);
+    assert.equal((await api('/categories/starters', { token: alice, method: 'POST', body: { names: ['Astrology'] } })).status, 400);
+    const categories = Object.fromEntries((await api('/categories')).body.categories.map((c) => [c.name, c]));
+
+    // Uploads without a category are sorted from their own text, even with an unhelpful title.
+    const longRoad = await upload('the_long_road.txt', history);
+    assert.equal(longRoad.category?.name, 'History');
+    assert.equal(longRoad.categorySource, 'auto');
+    assert.equal(longRoad.textProfile, undefined, 'the text summary stays on the server');
+    const morning = await upload('morning_light.txt', faith);
+    assert.equal(morning.category?.name, 'Religion & Spirituality');
+    const evening = await upload('the_evening.txt', novel);
+    assert.equal(evening.category?.name, 'Fiction');
+    // Chosen at upload: kept, and counted as a person's choice.
+    const chosen = await upload('chosen.txt', faith, { category: categories.History.id });
+    assert.equal(chosen.category.name, 'History');
+    assert.equal(chosen.categorySource, 'manual');
+    assert.equal((await api(`/books/${longRoad.id}`)).body.book.textProfile, undefined);
+
+    // Editing other details keeps an automatic pick; choosing a category makes it a person's choice.
+    res = await api(`/books/${evening.id}`, { token: carol, method: 'PATCH', body: { title: 'The Evening' } });
+    assert.equal(res.body.book.categorySource, 'auto');
+
+    // Filing existing books by hand, in bulk (an admin's choice counts as manual).
+    const club = (await api('/categories', { token: alice, method: 'POST', body: { name: 'Club Picks' } })).body.category;
+    const hives = await upload('hives_one.txt', bees);
+    const hives2 = await upload('hives_two.txt', bees.split(' ').reverse().join(' '));
+    assert.equal((await api('/categories/books', { token: carol, method: 'PUT', body: { assignments: [{ bookId: hives.id, categoryId: club.id }] } })).status, 403);
+    res = await api('/categories/books', {
+      token: alice,
+      method: 'PUT',
+      body: { assignments: [{ bookId: hives.id, categoryId: club.id }, { bookId: hives2.id, categoryId: club.id }, { bookId: evening.id, categoryId: null }] },
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.updated, 3);
+    assert.equal((await api(`/books/${hives.id}`)).body.book.categorySource, 'manual');
+    assert.equal((await api(`/books/${evening.id}`)).body.book.category, null);
+    res = await api('/categories/books', { token: alice, method: 'PUT', body: { assignments: [{ bookId: hives.id, categoryId: '0123456789abcdef01234567' }] } });
+    assert.equal(res.status, 400);
+    assert.ok((await api('/books?category=none')).body.books.some((b) => b.id === evening.id));
+    assert.ok(!(await api('/books?category=none')).body.books.some((b) => b.id === hives.id));
+
+    // Suggestions: nothing changes until applied, and A-Read learns from the books already filed.
+    const third = await upload('notes_from_the_hill.txt', repeat(bees.split('. '), 30), {});
+    assert.notEqual(third.category?.name, 'History');
+    await api('/categories/books', { token: alice, method: 'PUT', body: { assignments: [{ bookId: third.id, categoryId: null }] } });
+    assert.equal((await api('/categories/suggest', { token: carol, method: 'POST', body: {} })).status, 403);
+    res = await api('/categories/suggest', { token: alice, method: 'POST', body: { scope: 'uncategorized' } });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    const suggestionFor = (id) => res.body.suggestions.find((s) => s.book.id === id)?.suggestion;
+    assert.equal(suggestionFor(evening.id).category.name, 'Fiction');
+    assert.ok(suggestionFor(evening.id).reasons.length > 0);
+    assert.equal(suggestionFor(third.id).category?.name, 'Club Picks', 'learned from the two filed bee books');
+    assert.match(suggestionFor(third.id).reasons.join(' '), /similar to 2 books/);
+    assert.equal((await api(`/books/${evening.id}`)).body.book.category, null, 'suggesting changes nothing');
+    res = await api('/categories/suggest', { token: alice, method: 'POST', body: { scope: 'auto' } });
+    assert.ok(res.body.suggestions.every((s) => s.book.categorySource === 'auto'));
+    assert.ok(res.body.suggestions.some((s) => s.book.id === longRoad.id));
+
+    // Keywords steer the sorting.
+    res = await api(`/categories/${club.id}`, { token: alice, method: 'PATCH', body: { keywords: 'Beekeeping,  hive , beekeeping' } });
+    assert.deepEqual(res.body.category.keywords, ['beekeeping', 'hive']);
+
+    // Deleting a category un-files its books completely.
+    await api(`/categories/${club.id}`, { token: alice, method: 'DELETE' });
+    const after = (await api(`/books/${hives.id}`)).body.book;
+    assert.equal(after.category, null);
+    assert.equal(after.categorySource, undefined);
+  });
 });

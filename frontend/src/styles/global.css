@@ -2871,9 +2871,18 @@ input[type='range'] {
 
 .category-form {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) minmax(200px, 2fr) auto;
+  grid-template-columns: minmax(160px, 1fr) minmax(200px, 2fr);
   gap: 12px;
   align-items: end;
+}
+
+.category-form .category-keywords {
+  grid-column: 1 / -1;
+}
+
+.category-form > .button,
+.category-form > .button-row {
+  justify-self: start;
 }
 
 .premium-editor {
@@ -3127,4 +3136,85 @@ input[type='range'] {
 
 .service-list li.is-off > svg {
   color: var(--text-muted);
+}
+
+/* ---------- Filing books under categories ---------- */
+.add-books-row > td {
+  background: var(--surface-2);
+}
+
+.add-books {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.add-books-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.add-books-head .search {
+  flex: 1 1 260px;
+}
+
+.add-books-list {
+  background: var(--surface);
+  max-height: 320px;
+}
+
+.add-books-list .pick {
+  cursor: pointer;
+}
+
+.add-books-list .badge {
+  margin-left: 6px;
+}
+
+.auto-sort-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.auto-sort-controls select {
+  width: auto;
+}
+
+.auto-sort-table select {
+  width: auto;
+  min-width: 180px;
+}
+
+.auto-sort-table tr.no-match {
+  opacity: 0.7;
+}
+
+.auto-sort-table .badge {
+  margin-left: 6px;
+}
+
+.suggestion-why {
+  margin-top: 4px;
+  max-width: 340px;
+}
+
+.status-pill.confidence-strong {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.status-pill.confidence-likely {
+  background: var(--highlight-soft);
+  color: var(--text);
+}
+
+@media (max-width: 640px) {
+  .category-form {
+    grid-template-columns: 1fr;
+  }
 }

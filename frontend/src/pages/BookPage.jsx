@@ -84,7 +84,11 @@ export default function BookPage() {
               </span>
             )}
             {book.category && (
-              <Link to={`/?category=${encodeURIComponent(book.category.slug)}`} className="badge badge-link">
+              <Link
+                to={`/?category=${encodeURIComponent(book.category.slug)}`}
+                className="badge badge-link"
+                title={book.categorySource === 'auto' ? 'Category picked automatically from the book' : undefined}
+              >
                 {book.category.name}
               </Link>
             )}
@@ -498,7 +502,8 @@ function EditBook({ book, onDone }) {
       description: form.get('description'),
       language: form.get('language'),
       tags: form.get('tags'),
-      ...(form.has('category') ? { category: form.get('category') || null } : {}),
+      // Only when changed, so editing other details keeps an automatic pick marked as automatic.
+      ...(form.has('category') && form.get('category') !== (book.category?.id ?? '') ? { category: form.get('category') || null } : {}),
     });
   };
 
@@ -529,6 +534,7 @@ function EditBook({ book, onDone }) {
             <label className="field">
               <span>Category</span>
               <CategorySelect categories={categories} defaultValue={book.category?.id ?? ''} />
+              {book.categorySource === 'auto' && <small className="muted">A-Read picked this from the book. Change it if it&apos;s wrong.</small>}
             </label>
           )}
         </div>

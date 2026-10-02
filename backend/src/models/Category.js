@@ -9,6 +9,8 @@ const categorySchema = new Schema(
     // Used in library links (/?category=fiction). Unique, so names can't repeat in another case.
     slug: { type: String, required: true, unique: true },
     description: { type: String, trim: true, maxlength: 300, default: '' },
+    // Extra words that suggest a book belongs here, used when A-Read works out categories.
+    keywords: { type: [String], default: [] },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true },

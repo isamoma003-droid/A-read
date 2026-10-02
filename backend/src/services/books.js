@@ -10,6 +10,7 @@ import { Bookmark } from '../models/Bookmark.js';
 import { Progress } from '../models/Progress.js';
 import { Section, packParagraphs } from '../models/Section.js';
 import { badRequest } from '../utils/httpError.js';
+import { profileFromExtracted } from './categorize.js';
 import { extractBook } from './extract/index.js';
 import { stopNarration } from './narration.js';
 import {
@@ -82,6 +83,8 @@ export async function createBook({ user, files, fields }) {
       language: fields.language || metadata.language || '',
       tags: parseTags(fields.tags),
       category: fields.category || undefined,
+      categorySource: fields.category ? 'manual' : undefined,
+      textProfile: profileFromExtracted(extracted.sections),
       format,
       originalName: file.originalname,
       file: fileAsset,

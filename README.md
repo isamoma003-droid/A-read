@@ -11,7 +11,9 @@ A shared book library where people upload books and then **read them on screen o
 - **Follow along**: the sentence being spoken is highlighted and kept in view (device voice and cloud narration).
 - **Pick up where you left off**: reading and listening position is saved per user, plus private bookmarks with notes.
 - **Library**: covers (from the PDF's first page, the EPUB's own cover, an upload, or generated), search, format/audio/tag filters, and sorting.
-- **Categories**: admins keep a list of categories (Fiction, History, Children…). Uploaders file each book under one, and readers browse the library by category (`/?category=fiction`).
+- **Categories**: admins keep a list of categories (Fiction, History, Children…, or 15 common ones in one click). Readers browse the library by category (`/?category=fiction`).
+  - **Filing existing books**: under **Admin → Categories**, "Add books" picks books from the library (optionally only those without a category); the admin **Books** list also has a category picker per book.
+  - **Automatic categories**: A-Read works out a book's category from the book itself, with no outside service. It reads the title, tags, description, chapter titles and text taken from across the book, and compares them with each category's name and keywords, the words typical of about 25 common categories (in English and Kiswahili, e.g. "Dini" or "Kilimo"), how the book is written (lots of dialogue reads like a story; short lines like poetry), and the books already filed under each category. Uploads where no category is chosen are filed automatically when the match is clear (marked *auto*). **Sort books automatically** suggests categories for books without one (or re-checks automatic picks) for the admin to review, change and apply.
 - **Premium books**: admins pick books to sell, set a price, and choose which chapters stay locked (for example, "first 3 chapters free, lock the rest"). Readers see every chapter title, read the free ones, and pay once by M-Pesa to unlock the whole book on all their devices. The uploader and admins can always read everything.
 - **Batch uploads** of up to 20 books at a time, up to 100 MB each, even on Cloudinary's free plan (large files are stored in parts).
 - **Share** any book to WhatsApp, Telegram, Facebook, X, email or a copied link, with a title-and-cover preview.
@@ -49,6 +51,7 @@ A-Read/
 │   │   │   ├── books.js   upload / cover / audiobook / delete
 │   │   │   ├── narration.js  Google TTS background jobs
 │   │   │   ├── premium.js     who can open which chapters; private file names for premium books
+│   │   │   ├── categorize.js  works out a book's category from its own words
 │   │   │   └── storage.js Cloudinary helpers
 │   │   ├── app.js
 │   │   └── server.js
@@ -210,7 +213,7 @@ All endpoints except register/login need `Authorization: Bearer <token>`.
 | Method & path | Purpose |
 | --- | --- |
 | `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me` | Accounts |
-| `GET /api/books?q=&format=&audio=&tag=&category=&access=free\|premium&mine=&sort=&page=` | Library search & filters (`category` is the slug) |
+| `GET /api/books?q=&format=&audio=&tag=&category=&access=free\|premium&mine=&sort=&page=` | Library search & filters (`category` is the slug, or `none` for books without one) |
 | `POST /api/books` (multipart: `file`, optional `cover`, `title`, `author`, `description`, `language`, `tags`, `category`) | Upload a book |
 | `GET / PATCH / DELETE /api/books/:id` | Book details, edit, delete |
 | `PUT /api/books/:id/cover` (multipart `cover`) | Replace the cover |
@@ -220,7 +223,10 @@ All endpoints except register/login need `Authorization: Bearer <token>`.
 | `GET /api/tts/status`, `GET /api/tts/voices?language=en` | Narration availability and voices |
 | `GET /api/progress`, `GET / PUT /api/progress/:bookId` | Continue reading; per-book position |
 | `GET /api/admin/stats`, `GET /api/admin/users?q=`, `PATCH / DELETE /api/admin/users/:id` | Admin only: stats, readers, account removal (`?deleteBooks=true`). Changing a role, or removing an admin, needs a super admin |
-| `GET /api/categories` (public), `POST /api/categories`, `PATCH / DELETE /api/categories/:id` | Categories with book counts; admin only to change |
+| `GET /api/categories` (public), `POST /api/categories`, `PATCH / DELETE /api/categories/:id` (`name`, `description`, `keywords`) | Categories with book counts; admin only to change |
+| `GET / POST /api/categories/starters` | Admin only: common categories not in the library yet; add some |
+| `POST /api/categories/suggest` (`scope`: `uncategorized` \| `auto` \| `all`) | Admin only: a suggested category for each book, worked out from the book (changes nothing) |
+| `PUT /api/categories/books` (`assignments: [{ bookId, categoryId \| null }]`) | Admin only: file books under categories in bulk |
 | `POST /api/quotes/next` (public; body `seen`, `lastBook`) | The quote to show now: not seen yet, from a different book than the last |
 | `GET / POST /api/quotes`, `PATCH / DELETE /api/quotes/:id`, `POST /api/quotes/classics` | Admin only: manage quotes; add the built-in classics back |
 | `GET /api/system/config` (public), `GET /api/system/wake` (public) | Site settings the app needs; wake the API and ISA Tech Hub |

@@ -223,7 +223,8 @@ export default function UploadPage() {
             {categories?.length > 0 && (
               <label className="field">
                 <span>Category</span>
-                <CategorySelect categories={categories} />
+                <CategorySelect categories={categories} emptyLabel="Choose automatically" />
+                <small className="muted">Left on automatic, A-Read picks one from the book when it&apos;s confident.</small>
               </label>
             )}
             <label className="field">
