@@ -32,6 +32,11 @@ const paymentSchema = new Schema(
 
 paymentSchema.index({ user: 1, purpose: 1, status: 1 });
 paymentSchema.index({ book: 1, status: 1, user: 1 });
+// At most one unlock payment waiting for M-Pesa per reader and book (no double charge).
+paymentSchema.index(
+  { user: 1, book: 1 },
+  { unique: true, partialFilterExpression: { status: 'pending', book: { $exists: true } }, name: 'one_pending_unlock' },
+);
 
 // For unlocking paid features later: has this reader paid at least `minAmount` for `purpose`?
 paymentSchema.statics.hasPaid = async function hasPaid(userId, purpose, minAmount = 1) {

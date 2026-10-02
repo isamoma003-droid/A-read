@@ -176,18 +176,9 @@ router.post('/stk', stkLimiter, optionalAuth, validate(stkSchema), async (req, r
     if (!(await lockedSectionsFor(book, req.user)).size) throw conflict('You have already unlocked this book');
     // A prompt for this book may still be open (the reader reloaded, or M-Pesa's answer is late):
     // pick that payment up again instead of charging twice.
-    const waiting = await Payment.findOne({
-      user: req.user._id,
-      book: book._id,
-      status: 'pending',
-      createdAt: { $gt: new Date(Date.now() - GIVE_UP_MS) },
-    }).sort({ createdAt: -1 });
-    if (waiting) {
-      if (waiting.provider === 'hub') await refreshFromHub(waiting);
-      else await refreshFromDaraja(waiting);
-      if (waiting.status === 'paid') throw conflict('You have already unlocked this book');
-      if (waiting.status === 'pending') return res.json({ payment: publicPayment(waiting), resumed: true });
-    }
+    const waiting = await resumableBookPayment(req.user, book);
+    if (waiting?.status === 'paid') throw conflict('You have already unlocked this book');
+    if (waiting) return res.json({ payment: publicPayment(waiting), resumed: true });
     amount = book.premium.price;
   } else if (amount === undefined) {
     throw badRequest('Enter an amount');
@@ -199,15 +190,25 @@ router.post('/stk', stkLimiter, optionalAuth, validate(stkSchema), async (req, r
 
   // The purpose comes from the promotion an admin set up, never from the browser.
   const promotion = promotionId && !book ? await Promotion.findById(promotionId).select('purpose') : null;
-  const payment = await Payment.create({
-    user: req.user?._id,
-    promotion: promotion?._id,
-    book: book?._id,
-    purpose: book ? 'book' : promotion?.purpose || 'donation',
-    phone,
-    amount,
-    provider: viaHub ? 'hub' : 'daraja',
-  });
+  let payment;
+  try {
+    payment = await Payment.create({
+      user: req.user?._id,
+      promotion: promotion?._id,
+      book: book?._id,
+      purpose: book ? 'book' : promotion?.purpose || 'donation',
+      phone,
+      amount,
+      provider: viaHub ? 'hub' : 'daraja',
+    });
+  } catch (err) {
+    // Two unlock requests at the same moment (two tabs or devices): only one payment may be
+    // waiting per reader and book, so the second one follows the first.
+    if (err.code !== 11000 || !book) throw err;
+    const first = await Payment.findOne({ user: req.user._id, book: book._id, status: 'pending' });
+    if (!first) throw err;
+    return res.json({ payment: publicPayment(first), resumed: true });
+  }
 
   if (viaHub) await startThroughHub(payment, { promotion, book });
   else await startThroughDaraja(payment, { book });
@@ -309,6 +310,22 @@ router.get('/setup', requireAuth, requireAdmin, async (req, res) => {
     webhookUrl: `${req.protocol}://${req.get('host')}/api/payments/hub-webhook`,
   });
 });
+
+// The reader's unlock payment for `book` that is still waiting for M-Pesa, freshly checked, or null.
+// One that has had no answer for GIVE_UP_MS counts as failed (a late success still settles it), so
+// the reader can try again.
+async function resumableBookPayment(user, book) {
+  const waiting = await Payment.findOne({ user: user._id, book: book._id, status: 'pending' }).sort({ createdAt: -1 });
+  if (!waiting) return null;
+  if (waiting.provider === 'hub') await refreshFromHub(waiting);
+  else await refreshFromDaraja(waiting);
+  if (waiting.status === 'pending' && Date.now() - waiting.createdAt.getTime() > GIVE_UP_MS) {
+    waiting.status = 'failed';
+    waiting.resultDesc = 'No answer from M-Pesa';
+    await waiting.save();
+  }
+  return ['pending', 'paid'].includes(waiting.status) ? waiting : null;
+}
 
 const due = (payment, everyMs) => !payment.checkedAt || Date.now() - payment.checkedAt.getTime() > everyMs;
 

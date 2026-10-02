@@ -1016,10 +1016,14 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
 
     // Erin pays the book's price by M-Pesa.
     const calls = [];
+    let pushes = 0;
     setMpesaTransport(async (url, { body }) => {
       calls.push({ url, body });
       if (url.includes('/oauth/')) return { status: 200, json: { access_token: 'token', expires_in: '3599' } };
-      return { status: 200, json: { ResponseCode: '0', CheckoutRequestID: 'ws_CO_book', MerchantRequestID: 'm_book' } };
+      if (url.includes('/stkpushquery/')) return { status: 500, json: { errorCode: '500.001.1001', errorMessage: 'The transaction is being processed' } };
+      pushes++;
+      const id = pushes === 1 ? 'ws_CO_book' : `ws_CO_book_${pushes}`;
+      return { status: 200, json: { ResponseCode: '0', CheckoutRequestID: id, MerchantRequestID: 'm_book' } };
     });
     let payment;
     try {
@@ -1042,6 +1046,22 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
       assert.equal(res.body.resumed, true);
       assert.equal(res.body.payment.id, payment.id, 'no second charge');
       assert.equal(calls.filter((c) => c.url.endsWith('/processrequest')).length, 1);
+
+      // Two unlock requests at the very same moment (two tabs or phones) still make one payment.
+      const fay = (await api('/auth/register', { method: 'POST', body: { name: 'Fay', email: 'fay@example.com', password: 'password5' } })).body.token;
+      const both = await Promise.all(
+        ['0712000101', '0712000102'].map((phone) => api('/payments/stk', { token: fay, method: 'POST', body: { phone, bookId: book.id } })),
+      );
+      assert.deepEqual(both.map((r) => r.status).sort(), [200, 201]);
+      assert.equal(both[0].body.payment.id, both[1].body.payment.id);
+      // A prompt that never got an answer stops blocking after five minutes: a new one can be sent.
+      const { Payment } = await import('../src/models/Payment.js');
+      const stuck = both[0].body.payment.id;
+      await Payment.collection.updateOne({ _id: new mongoose.Types.ObjectId(stuck) }, { $set: { createdAt: new Date(Date.now() - 6 * 60_000) } });
+      res = await api('/payments/stk', { token: fay, method: 'POST', body: { phone: '0712000103', bookId: book.id } });
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+      assert.notEqual(res.body.payment.id, stuck);
+      assert.equal((await Payment.findById(stuck)).status, 'failed');
       assert.equal((await api(`/books/${book.id}/sections/2`, { token: erin })).status, 402, 'locked until M-Pesa confirms');
       await api('/payments/mpesa/callback/callback-secret', {
         method: 'POST',
@@ -1078,7 +1098,9 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.deepEqual(res.body.books.find((b) => b.id === book.id).sales, { amount: 200, count: 1 });
     assert.equal((await api('/admin/premium', { token: erin })).status, 403);
     res = await api('/payments?purpose=book', { token: alice });
-    assert.deepEqual(res.body.payments.map((p) => [p.book.title, p.status]), [['Paid Book', 'paid']]);
+    const erinsPayment = res.body.payments.find((p) => p.id === payment.id);
+    assert.deepEqual([erinsPayment.book.title, erinsPayment.status], ['Paid Book', 'paid']);
+    assert.ok(res.body.payments.every((p) => p.purpose === 'book'));
     assert.deepEqual(res.body.totals.byPurpose.book, { amount: 200, count: 1 });
     assert.equal((await api('/admin/stats', { token: alice })).body.premium, 1);
 
@@ -1225,8 +1247,16 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
   });
 
   test('book quotes appear once each and never from the same book twice in a row', async () => {
-    const { seedClassicQuotes } = await import('../src/services/quotes.js');
+    const { seedClassicQuotes, removeDuplicateQuotes } = await import('../src/services/quotes.js');
     const { CLASSIC_QUOTES } = await import('../src/data/classicQuotes.js');
+    const { Quote } = await import('../src/models/Quote.js');
+    // A first start that fails part-way tries again next time.
+    const insertMany = Quote.insertMany;
+    Quote.insertMany = async () => {
+      throw new Error('connection lost');
+    };
+    await assert.rejects(seedClassicQuotes(), /connection lost/);
+    Quote.insertMany = insertMany;
     assert.equal(await seedClassicQuotes(), CLASSIC_QUOTES.length, 'the classics fill an empty list on first start');
     assert.equal(await seedClassicQuotes(), 0, 'and only once');
 
@@ -1280,6 +1310,14 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     res = await api('/quotes', { token: alice, method: 'POST', body: { text: CLASSIC_QUOTES[0].text, bookTitle: 'Somewhere else' } });
     assert.equal(res.status, 409);
     assert.match(res.body.error, /already in the list/);
+    // A database with duplicates from before the unique rule keeps the oldest of each.
+    await Quote.collection.dropIndex('text_1');
+    const copy = (await Quote.findOne({ text: CLASSIC_QUOTES[1].text }).lean());
+    await Quote.collection.insertOne({ ...copy, _id: new mongoose.Types.ObjectId(), createdAt: new Date() });
+    assert.equal(await removeDuplicateQuotes(), 1);
+    assert.equal(await Quote.countDocuments({ text: CLASSIC_QUOTES[1].text }), 1);
+    assert.equal((await Quote.findOne({ text: CLASSIC_QUOTES[1].text })).id, String(copy._id));
+    await Quote.createIndexes();
 
     // A super admin can switch the popup off.
     await api('/system/settings', { token: sam, method: 'PUT', body: { quotesEnabled: false } });

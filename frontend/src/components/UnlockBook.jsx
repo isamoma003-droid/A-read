@@ -10,18 +10,21 @@ import { ErrorMessage, Spinner } from './Feedback.jsx';
 import { PaymentStatus, savePhone, savedPhone } from './MpesaPayment.jsx';
 
 // The payment waiting for M-Pesa's answer, per reader and book, so a reload keeps following it.
+// Like the server, it stops waiting after five minutes.
 const pendingKey = (userId, bookId) => `a-read-unlock-${userId}-${bookId}`;
+const WAIT_MS = 5 * 60 * 1000;
 function pendingPayment(userId, bookId) {
   if (!userId) return null;
   try {
-    return localStorage.getItem(pendingKey(userId, bookId));
+    const saved = JSON.parse(localStorage.getItem(pendingKey(userId, bookId)) || 'null');
+    return saved?.id && Date.now() - saved.at < WAIT_MS ? saved.id : null;
   } catch {
     return null;
   }
 }
 function rememberPayment(userId, bookId, paymentId) {
   try {
-    if (paymentId) localStorage.setItem(pendingKey(userId, bookId), paymentId);
+    if (paymentId) localStorage.setItem(pendingKey(userId, bookId), JSON.stringify({ id: paymentId, at: Date.now() }));
     else localStorage.removeItem(pendingKey(userId, bookId));
   } catch {
     // ignore
@@ -66,6 +69,9 @@ export default function UnlockBook({ book, price: priceOverride }) {
       <PaymentStatus
         id={paymentId}
         onRetry={() => setPaymentId(null)}
+        onClose={() => setPaymentId(null)}
+        // Answered either way: a reload shows the book (paid) or the form again.
+        onSettled={() => rememberPayment(user?.id, book.id, null)}
         onPaid={onPaid}
         paidTitle="Book unlocked"
         paidText="Every chapter is open now, on all your devices."

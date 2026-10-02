@@ -23,19 +23,38 @@ export function savePhone(phone) {
   }
 }
 
-// Follows one STK Push payment until M-Pesa answers. `onPaid` runs once when it's paid.
-export function PaymentStatus({ id, onRetry, onPaid, paidTitle = 'Thank you!', paidText }) {
+// Follows one STK Push payment until M-Pesa answers. `onPaid` runs once when it's paid, and
+// `onSettled` once when M-Pesa has answered either way. With `onClose`, the waiting, error and
+// "checking" screens get a button back to the form.
+export function PaymentStatus({ id, onRetry, onPaid, onSettled, onClose, paidTitle = 'Thank you!', paidText }) {
   const { data: payment, error } = usePayment(id);
-  const paid = payment?.status === 'paid';
-  const reported = useRef(false);
+  const status = payment?.status;
+  const reported = useRef({ paid: false, settled: false });
   useEffect(() => {
-    if (paid && !reported.current) {
-      reported.current = true;
+    if (!status || status === 'pending') return;
+    if (!reported.current.settled) {
+      reported.current.settled = true;
+      onSettled?.(payment);
+    }
+    if (status === 'paid' && !reported.current.paid) {
+      reported.current.paid = true;
       onPaid?.(payment);
     }
-  }, [paid, payment, onPaid]);
+  }, [status, payment, onPaid, onSettled]);
+  const back = onClose && (
+    <button type="button" className="button button-ghost button-small" onClick={onClose}>
+      Back
+    </button>
+  );
 
-  if (error) return <ErrorMessage error={error} />;
+  if (error) {
+    return (
+      <div className="stack-sm">
+        <ErrorMessage error={error} />
+        {back}
+      </div>
+    );
+  }
   if (!payment || payment.status === 'pending') {
     return (
       <section className="panel payment-status" aria-live="polite">
@@ -43,10 +62,11 @@ export function PaymentStatus({ id, onRetry, onPaid, paidTitle = 'Thank you!', p
         <h2>Check your phone</h2>
         <p>Enter your M-Pesa PIN on the prompt to pay {payment ? formatKes(payment.amount) : ''}.</p>
         <Spinner label="Waiting for M-Pesa…" />
+        {back}
       </section>
     );
   }
-  if (paid) {
+  if (status === 'paid') {
     return (
       <section className="panel payment-status payment-paid" aria-live="polite">
         <CircleCheck size={40} strokeWidth={1.5} aria-hidden="true" />
@@ -63,6 +83,7 @@ export function PaymentStatus({ id, onRetry, onPaid, paidTitle = 'Thank you!', p
         <h2>We're checking this payment</h2>
         <p>{payment.message}</p>
         {payment.receipt && <p className="muted small">M-Pesa receipt {payment.receipt}</p>}
+        {back}
       </section>
     );
   }

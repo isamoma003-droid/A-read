@@ -1,7 +1,6 @@
 import { CLASSIC_QUOTES } from '../data/classicQuotes.js';
 import { Quote } from '../models/Quote.js';
-import { Settings } from '../models/Settings.js';
-import { clearSettingsCache } from './settings.js';
+import { getSettings, updateSettings } from './settings.js';
 
 /**
  * Chooses the next quote for a reader. Every quote is shown once before any comes back (a new
@@ -43,10 +42,36 @@ export function pickQuote(quotes, { seen = [], lastBook = null, random = Math.ra
   return { quote: fromBook[Math.floor(random() * fromBook.length)], reset, keep };
 }
 
-// Adds the classic quotes that aren't in the list yet. Returns how many were added. Quote text is
-// unique, so two imports at once (a double click) can't add the same quote twice.
+// Quote text is unique, so the same line can't be listed twice. A database that already has
+// duplicates (from before that rule) keeps the oldest of each, then gets the index. Built once per
+// process; a failure is retried on the next call.
+let indexed = null;
+export function ensureQuoteIndexes() {
+  indexed ??= (async () => {
+    await removeDuplicateQuotes();
+    await Quote.createIndexes();
+  })().catch((err) => {
+    indexed = null;
+    throw err;
+  });
+  return indexed;
+}
+
+export async function removeDuplicateQuotes() {
+  const groups = await Quote.aggregate([
+    { $sort: { createdAt: 1, _id: 1 } },
+    { $group: { _id: '$text', ids: { $push: '$_id' }, count: { $sum: 1 } } },
+    { $match: { count: { $gt: 1 } } },
+  ]);
+  const extra = groups.flatMap((g) => g.ids.slice(1));
+  if (extra.length) await Quote.deleteMany({ _id: { $in: extra } });
+  return extra.length;
+}
+
+// Adds the classic quotes that aren't in the list yet. Returns how many were added. Two imports at
+// once (a double click, or two servers starting) can't add the same quote twice.
 export async function importClassicQuotes(user) {
-  await Quote.init();
+  await ensureQuoteIndexes();
   const existing = new Set((await Quote.find().select('text').lean()).map((q) => q.text));
   const missing = CLASSIC_QUOTES.filter((q) => !existing.has(q.text));
   if (!missing.length) return 0;
@@ -63,23 +88,13 @@ export async function importClassicQuotes(user) {
   }
 }
 
-// On the first start, fill the empty quote list with the classics. Only once (an admin who deletes
-// them all doesn't get them back on the next restart), and only by one server if several start
-// together: the first to set quotesSeeded does it.
+// On the first start, fill the empty quote list with the classics. Only once: an admin who deletes
+// them all doesn't get them back on the next restart. The flag is set after the import, so a start
+// that fails part-way tries again next time (the unique text keeps two servers from doubling up).
 export async function seedClassicQuotes() {
-  const claimed = await Settings.findOneAndUpdate(
-    { _id: 'system', quotesSeeded: { $ne: true } },
-    { $set: { quotesSeeded: true } },
-    { upsert: true, returnDocument: 'before' },
-  ).then(
-    () => true,
-    (err) => {
-      // Another server set the flag first (or it was already set): the upsert hits the same _id.
-      if (err.code === 11000) return false;
-      throw err;
-    },
-  );
-  clearSettingsCache();
-  if (!claimed) return 0;
-  return (await Quote.estimatedDocumentCount()) === 0 ? importClassicQuotes() : 0;
+  await ensureQuoteIndexes();
+  if ((await getSettings()).quotesSeeded) return 0;
+  const added = (await Quote.estimatedDocumentCount()) === 0 ? await importClassicQuotes() : 0;
+  await updateSettings({ quotesSeeded: true });
+  return added;
 }
