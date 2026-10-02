@@ -1,17 +1,19 @@
 import { useState } from 'react';
-import { BookOpen, Database, Headphones, Search, Shield, ShieldOff, Trash2, Users } from 'lucide-react';
+import { BookOpen, Crown, Database, Headphones, Search, Shield, ShieldOff, Trash2, Users } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Link, Navigate } from 'react-router-dom';
+import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAdminStats, useAdminUsers, useBooks } from '../api/queries.js';
 import BookCover from '../components/BookCover.jsx';
 import { ErrorMessage, Spinner } from '../components/Feedback.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { FORMAT_LABELS, formatBytes, formatNumber, timeAgo } from '../utils/format.js';
+import { FORMAT_LABELS, formatBytes, formatKes, formatNumber, timeAgo } from '../utils/format.js';
 import { useDebounced } from '../utils/useDebounced.js';
 import { useDocumentTitle } from '../utils/useDocumentTitle.js';
 import AdminAssignments from './AdminAssignments.jsx';
+import AdminCategories from './AdminCategories.jsx';
 import AdminPayments from './AdminPayments.jsx';
+import AdminPremium from './AdminPremium.jsx';
 import AdminPromotions from './AdminPromotions.jsx';
 
 const TABS = [
@@ -19,13 +21,18 @@ const TABS = [
   ['assignments', 'Assignments'],
   ['users', 'Users'],
   ['books', 'Books'],
+  ['categories', 'Categories'],
+  ['premium', 'Premium'],
   ['promotions', 'Popups'],
   ['payments', 'Payments'],
 ];
 
 export default function AdminPage() {
   const { user } = useAuth();
-  const [tab, setTab] = useState('overview');
+  // The tab lives in the URL (/admin?tab=premium&book=…) so pages can link straight to it.
+  const [params, setParams] = useSearchParams();
+  const tab = TABS.some(([id]) => id === params.get('tab')) ? params.get('tab') : 'overview';
+  const setTab = (id) => setParams(id === 'overview' ? {} : { tab: id }, { replace: true });
   useDocumentTitle('Admin');
   if (user.role !== 'admin') return <Navigate to="/" replace />;
 
@@ -48,6 +55,8 @@ export default function AdminPage() {
       {tab === 'assignments' && <AdminAssignments />}
       {tab === 'users' && <UsersTab me={user} />}
       {tab === 'books' && <BooksTab />}
+      {tab === 'categories' && <AdminCategories />}
+      {tab === 'premium' && <AdminPremium />}
       {tab === 'promotions' && <AdminPromotions />}
       {tab === 'payments' && <AdminPayments />}
     </div>
@@ -79,6 +88,7 @@ function Overview() {
       <Stat icon={Users} label="Readers" value={formatNumber(data.users)} detail={`${data.newUsersThisWeek} new this week · ${data.admins} admin${data.admins === 1 ? '' : 's'}`} />
       <Stat icon={BookOpen} label="Books" value={formatNumber(data.books)} detail={formats || 'None yet'} />
       <Stat icon={Headphones} label="With audio" value={formatNumber(data.narrated + data.audiobooks)} detail={`${data.narrated} narrated · ${data.audiobooks} audiobooks`} />
+      <Stat icon={Crown} label="Premium books" value={formatNumber(data.premium)} detail="Readers pay once to unlock" />
       <Stat icon={Database} label="Storage used" value={formatBytes(data.storageBytes) || '0 B'} detail={`${formatNumber(data.words)} words of text`} />
     </div>
   );
@@ -242,6 +252,11 @@ function BooksTab() {
                     {book.hasAudio && (
                       <span className="badge badge-accent" title="Has audio">
                         <Headphones size={11} aria-hidden="true" />
+                      </span>
+                    )}
+                    {book.premium && (
+                      <span className="badge badge-premium" title={`Premium: ${formatKes(book.premium.price)}`}>
+                        <Crown size={11} aria-hidden="true" />
                       </span>
                     )}
                   </td>

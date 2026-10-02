@@ -12,6 +12,7 @@ import assignmentRoutes from './routes/assignments.js';
 import authRoutes from './routes/auth.js';
 import bookmarkRoutes from './routes/bookmarks.js';
 import bookRoutes from './routes/books.js';
+import categoryRoutes from './routes/categories.js';
 import paymentRoutes from './routes/payments.js';
 import progressRoutes from './routes/progress.js';
 import promotionRoutes from './routes/promotions.js';
@@ -39,6 +40,7 @@ export function createApp() {
   app.use('/api/auth', authRoutes);
   app.use('/api/books', bookRoutes);
   app.use('/api/bookmarks', bookmarkRoutes);
+  app.use('/api/categories', categoryRoutes);
   app.use('/api/progress', progressRoutes);
   app.use('/api/tts', ttsRoutes);
   app.use('/api/admin', adminRoutes);

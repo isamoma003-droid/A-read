@@ -1,5 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import { BookOpen, CalendarClock, CheckCircle2, Headphones, ImagePlus, LogIn, Music, Pencil, Sparkles, Trash2 } from 'lucide-react';
+import {
+  BookOpen,
+  CalendarClock,
+  CheckCircle2,
+  Crown,
+  Headphones,
+  ImagePlus,
+  Lock,
+  LockOpen,
+  LogIn,
+  Music,
+  Pencil,
+  Sparkles,
+  Trash2,
+} from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, upload } from '../api/client.js';
@@ -7,12 +21,15 @@ import {
   keys,
   useBook,
   useBookMutation,
+  useCategories,
   useNarrationStatus,
   useSections,
   useTtsStatus,
   useVoices,
 } from '../api/queries.js';
 import BookCover from '../components/BookCover.jsx';
+import CategorySelect from '../components/CategorySelect.jsx';
+import UnlockBook from '../components/UnlockBook.jsx';
 import ShareButton from '../components/ShareButton.jsx';
 import FileDrop from '../components/FileDrop.jsx';
 import { ErrorMessage, PageLoader, ProgressBar, Spinner } from '../components/Feedback.jsx';
@@ -23,8 +40,10 @@ import {
   FORMAT_LABELS,
   formatDuration,
   formatHours,
+  formatKes,
   formatNumber,
   listeningMinutes,
+  partName,
   readingMinutes,
   timeAgo,
 } from '../utils/format.js';
@@ -57,6 +76,16 @@ export default function BookPage() {
               <span className="badge badge-accent">
                 <Headphones size={12} aria-hidden="true" /> Audio
               </span>
+            )}
+            {book.premium && (
+              <span className="badge badge-premium">
+                <Crown size={12} aria-hidden="true" /> Premium{!book.unlocked && <> · {formatKes(book.premium.price)}</>}
+              </span>
+            )}
+            {book.category && (
+              <Link to={`/?category=${encodeURIComponent(book.category.slug)}`} className="badge badge-link">
+                {book.category.name}
+              </Link>
             )}
           </div>
           <h1 className="book-title">{book.title}</h1>
@@ -114,6 +143,11 @@ export default function BookPage() {
                 <Pencil size={16} aria-hidden="true" /> {editing ? 'Close editor' : 'Edit'}
               </button>
             )}
+            {user?.role === 'admin' && (
+              <Link to={`/admin?tab=premium&book=${book.id}`} className="button button-ghost">
+                <Crown size={16} aria-hidden="true" /> Premium settings
+              </Link>
+            )}
           </div>
           {noText && (
             <p className="notice">
@@ -130,6 +164,7 @@ export default function BookPage() {
       <div className="book-columns">
         <Contents book={book} />
         <div className="stack">
+          {book.premium && <PremiumPanel book={book} />}
           {user ? (
             <>
               <NarrationPanel book={book} />
@@ -160,12 +195,44 @@ export default function BookPage() {
   );
 }
 
+function PremiumPanel({ book }) {
+  const { user } = useAuth();
+  const locked = book.premium.lockedSections.length;
+  const free = book.sectionCount - locked;
+  const parts = (n) => `${formatNumber(n)} ${partName(book.format, n)}`;
+  return (
+    <section className="panel premium-panel">
+      <h2 className="panel-title">
+        <Crown size={18} aria-hidden="true" /> Premium book
+      </h2>
+      {book.unlocked && user ? (
+        <p className="premium-unlocked">
+          <LockOpen size={16} aria-hidden="true" />
+          {book.canEdit
+            ? `Readers pay ${formatKes(book.premium.price)} to open ${parts(locked)}. You can read everything because you ${user.role === 'admin' ? 'are an admin' : 'uploaded it'}.`
+            : 'You unlocked this book. Every chapter is yours to read and listen to.'}
+        </p>
+      ) : (
+        <>
+          <p>
+            {free > 0 ? `${parts(free)} free to read. Unlock the other ${parts(locked)}` : `Unlock all ${parts(locked)}`} with a one-time
+            payment of <strong>{formatKes(book.premium.price)}</strong>.
+          </p>
+          <UnlockBook book={book} />
+        </>
+      )}
+    </section>
+  );
+}
+
 function Contents({ book }) {
   const { user } = useAuth();
   const { data: sections, isPending } = useSections(book.id);
   const entries = book.toc?.length
     ? book.toc
     : (sections || []).map((s) => ({ title: s.title, sectionIndex: s.index, depth: 0 }));
+  const isLocked = (entry) => Boolean(sections?.[entry.sectionIndex]?.locked);
+  const lockIcon = (entry) => isLocked(entry) && <Lock size={13} className="toc-lock" aria-label="Locked" />;
   return (
     <section className="panel">
       <h2 className="panel-title">Contents</h2>
@@ -175,7 +242,15 @@ function Contents({ book }) {
         <ol className="toc-list">
           {entries.slice(0, 400).map((entry, i) => (
             <li key={`${entry.sectionIndex}-${i}`} style={{ paddingLeft: `${entry.depth * 16}px` }}>
-              {user ? <Link to={`/read/${book.id}?section=${entry.sectionIndex}`}>{entry.title}</Link> : <span>{entry.title}</span>}
+              {user ? (
+                <Link to={`/read/${book.id}?section=${entry.sectionIndex}`}>
+                  {entry.title} {lockIcon(entry)}
+                </Link>
+              ) : (
+                <span>
+                  {entry.title} {lockIcon(entry)}
+                </span>
+              )}
             </li>
           ))}
         </ol>
@@ -393,9 +468,11 @@ function EditBook({ book, onDone }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [cover, setCover] = useState(null);
+  const { data: categories } = useCategories();
   const save = useBookMutation(book.id, (fields) => api(`/books/${book.id}`, { method: 'PATCH', body: fields }), {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: keys.tags });
+      queryClient.invalidateQueries({ queryKey: keys.categories });
       onDone();
     },
   });
@@ -420,6 +497,7 @@ function EditBook({ book, onDone }) {
       description: form.get('description'),
       language: form.get('language'),
       tags: form.get('tags'),
+      ...(form.has('category') ? { category: form.get('category') || null } : {}),
     });
   };
 
@@ -446,6 +524,12 @@ function EditBook({ book, onDone }) {
             <span>Language</span>
             <input name="language" defaultValue={book.language} maxLength={20} />
           </label>
+          {categories?.length > 0 && (
+            <label className="field">
+              <span>Category</span>
+              <CategorySelect categories={categories} defaultValue={book.category?.id ?? ''} />
+            </label>
+          )}
         </div>
         <label className="field">
           <span>Description</span>

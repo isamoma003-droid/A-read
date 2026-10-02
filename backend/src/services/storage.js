@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import { cloudinary } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
@@ -67,6 +68,20 @@ export async function uploadBuffer(buffer, { publicId, resourceType, transformat
       )
       .end(buffer),
   );
+  return toAsset(result, resourceType);
+}
+
+// Cloudinary URLs are public, so a file only some readers may open (part of a premium book) gets
+// a name nobody can guess: "book-<24 hex>.pdf", "narration/section-0004-<24 hex>".
+export const privateSuffix = () => crypto.randomBytes(12).toString('hex');
+export const hasPrivateName = (publicId = '') => /-[0-9a-f]{24}(\.[a-z0-9]+)*$/.test(publicId);
+
+export async function renameAsset(fromId, toId, resourceType) {
+  // The Cloudinary error isn't kept as a cause: it carries the API secret (see errorMessage).
+  const result = await cloudinary.uploader
+    .rename(fromId, toId, { resource_type: resourceType, invalidate: true })
+    .catch((err) => ({ failed: errorMessage(err) }));
+  if (result.failed) throw new Error(`Cloudinary rename failed: ${result.failed}`);
   return toAsset(result, resourceType);
 }
 

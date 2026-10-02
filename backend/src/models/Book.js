@@ -54,6 +54,19 @@ const narrationSchema = new Schema(
   { _id: false },
 );
 
+// Set by admins: readers pay `price` (KES, by M-Pesa) once to open the `lockedSections`.
+// Turning premium off keeps the price and chapters so it can be turned back on.
+const premiumSchema = new Schema(
+  {
+    enabled: { type: Boolean, default: false },
+    price: { type: Number, min: 1 },
+    lockedSections: { type: [Number], default: [] },
+    updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    updatedAt: Date,
+  },
+  { _id: false },
+);
+
 const bookSchema = new Schema(
   {
     title: { type: String, required: true, trim: true, maxlength: 300 },
@@ -61,6 +74,8 @@ const bookSchema = new Schema(
     description: { type: String, trim: true, maxlength: 5000, default: '' },
     language: { type: String, trim: true, maxlength: 20, default: '' },
     tags: { type: [String], default: [] },
+    category: { type: Schema.Types.ObjectId, ref: 'Category', index: true },
+    premium: premiumSchema,
     format: { type: String, enum: ['pdf', 'epub', 'txt'], required: true },
     originalName: String,
     file: { type: assetSchema, required: true },

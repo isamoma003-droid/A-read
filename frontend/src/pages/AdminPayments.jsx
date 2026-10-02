@@ -143,6 +143,7 @@ export default function AdminPayments() {
                     <td className="small">
                       {p.purpose}
                       {p.promotion && <div className="muted small">{p.promotion.title}</div>}
+                      {p.book && <div className="muted small">{p.book.title}</div>}
                     </td>
                     <td>
                       <span className={`status-pill payment-${p.status}`} title={p.resultDesc || ''}>

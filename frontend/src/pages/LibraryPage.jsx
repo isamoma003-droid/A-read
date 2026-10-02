@@ -1,7 +1,7 @@
 import { Library, Search, Upload, X } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { useBooks, useContinueReading, useTags } from '../api/queries.js';
+import { useBooks, useCategories, useContinueReading, useTags } from '../api/queries.js';
 import RequiredShelf from '../components/RequiredShelf.jsx';
 import { useDocumentTitle } from '../utils/useDocumentTitle.js';
 import OfflineBooks from '../components/OfflineBooks.jsx';
@@ -22,6 +22,11 @@ const AUDIO = [
   ['any', 'With audio'],
   ['narration', 'Narrated'],
   ['audiobook', 'Audiobook'],
+];
+const ACCESS = [
+  ['', 'Free and premium'],
+  ['free', 'Free'],
+  ['premium', 'Premium'],
 ];
 
 function ContinueReading() {
@@ -51,6 +56,8 @@ export default function LibraryPage() {
     format: params.get('format') || '',
     audio: params.get('audio') || '',
     tag: params.get('tag') || '',
+    category: params.get('category') || '',
+    access: params.get('access') || '',
     mine: params.get('mine') === 'true',
     sort: params.get('sort') || 'recent',
   };
@@ -69,9 +76,11 @@ export default function LibraryPage() {
 
   const books = useBooks(filters);
   const { data: tagData } = useTags();
+  const { data: categories } = useCategories();
   const list = books.data?.pages.flatMap((page) => page.books) ?? [];
   const total = books.data?.pages[0]?.total ?? 0;
-  const filtering = Boolean(filters.q || filters.format || filters.audio || filters.tag || filters.mine);
+  const filtering = Boolean(filters.q || filters.format || filters.audio || filters.tag || filters.category || filters.access || filters.mine);
+  const category = categories?.find((c) => c.slug === filters.category);
 
   return (
     <div className="library">
@@ -113,9 +122,31 @@ export default function LibraryPage() {
 
       <section>
         <div className="library-header">
-          <h2 className="section-title">Library</h2>
+          <h2 className="section-title">{category ? category.name : 'Library'}</h2>
           {books.isSuccess && <span className="muted">{total === 1 ? '1 book' : `${total} books`}</span>}
         </div>
+
+        {category?.description && <p className="muted category-description">{category.description}</p>}
+
+        {categories?.length > 0 && (
+          <nav className="category-row" aria-label="Categories">
+            <button type="button" className={`chip ${!filters.category ? 'chip-active' : ''}`} onClick={() => setParam('category', '')}>
+              All books
+            </button>
+            {categories.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                className={`chip ${filters.category === c.slug ? 'chip-active' : ''}`}
+                aria-pressed={filters.category === c.slug}
+                onClick={() => setParam('category', filters.category === c.slug ? '' : c.slug)}
+              >
+                {c.name}
+                <span className="chip-count">{c.books}</span>
+              </button>
+            ))}
+          </nav>
+        )}
 
         <div className="filters">
           <select value={filters.format} onChange={(e) => setParam('format', e.target.value)} aria-label="Format">
@@ -129,6 +160,13 @@ export default function LibraryPage() {
             {AUDIO.map(([value, label]) => (
               <option key={value} value={value}>
                 {value ? label : 'Audio: any'}
+              </option>
+            ))}
+          </select>
+          <select value={filters.access} onChange={(e) => setParam('access', e.target.value)} aria-label="Free or premium">
+            {ACCESS.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
               </option>
             ))}
           </select>

@@ -3,7 +3,8 @@ import { CheckCircle2, CircleAlert, FileText, ImagePlus, LoaderCircle, Plus, Upl
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { upload } from '../api/client.js';
-import { keys } from '../api/queries.js';
+import { keys, useCategories } from '../api/queries.js';
+import CategorySelect from '../components/CategorySelect.jsx';
 import FileDrop from '../components/FileDrop.jsx';
 import { ErrorMessage, ProgressBar } from '../components/Feedback.jsx';
 import { formatBytes } from '../utils/format.js';
@@ -25,6 +26,7 @@ export default function UploadPage() {
   const [over, setOver] = useState(false);
   const [error, setError] = useState(null);
   const [running, setRunning] = useState(false);
+  const { data: categories } = useCategories();
 
   const single = items.length === 1;
   const finished = items.length > 0 && items.every((i) => i.status === 'done');
@@ -57,7 +59,7 @@ export default function UploadPage() {
 
     for (const item of queue) {
       const form = new FormData();
-      for (const key of ['tags', 'language', 'description']) {
+      for (const key of ['tags', 'language', 'description', 'category']) {
         if (shared.get(key)) form.append(key, shared.get(key));
       }
       if (single) {
@@ -87,6 +89,7 @@ export default function UploadPage() {
     setRunning(false);
     queryClient.invalidateQueries({ queryKey: ['books'] });
     queryClient.invalidateQueries({ queryKey: keys.tags });
+    queryClient.invalidateQueries({ queryKey: keys.categories });
     if (single && created.length === 1) navigate(`/books/${created[0].id}`);
   };
 
@@ -201,6 +204,12 @@ export default function UploadPage() {
             items.length > 1 && <p className="muted small">Titles and authors are read from each file. You can edit them afterwards.</p>
           )}
           <div className="form-grid">
+            {categories?.length > 0 && (
+              <label className="field">
+                <span>Category</span>
+                <CategorySelect categories={categories} />
+              </label>
+            )}
             <label className="field">
               <span>Tags</span>
               <input name="tags" maxLength={500} placeholder="fiction, classic, history" />

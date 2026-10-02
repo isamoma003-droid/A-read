@@ -57,3 +57,6 @@ export function timeAgo(date) {
 }
 
 export const FORMAT_LABELS = { pdf: 'PDF', epub: 'EPUB', txt: 'TXT' };
+
+// What a book's sections are called: PDFs are split by page, EPUB and TXT books by chapter.
+export const partName = (format, count = 1) => (format === 'pdf' ? 'page' : 'chapter') + (count === 1 ? '' : 's');

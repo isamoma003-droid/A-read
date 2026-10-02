@@ -30,6 +30,7 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
   let base;
   const uploads = [];
   const destroyed = [];
+  const renamed = [];
 
   before(async () => {
     const { cloudinary } = await import('../src/config/cloudinary.js');
@@ -52,6 +53,10 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
       },
     });
     cloudinary.uploader.destroy = async (publicId) => destroyed.push(publicId);
+    cloudinary.uploader.rename = async (from, to, options) => {
+      renamed.push({ from, to });
+      return fakeResult({ public_id: to, resource_type: options.resource_type });
+    };
     cloudinary.api.delete_resources_by_prefix = async (prefix) => destroyed.push(prefix);
     cloudinary.api.delete_folder = async () => {};
 
@@ -417,7 +422,7 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
       const section = (await api(`/books/${txtBook.id}/sections/0`, { token: bob })).body.section;
       assert.deepEqual(section.narration.marks, [0, 0.4]);
       assert.equal(section.narration.duration, 1);
-      assert.match(section.narration.url, /narration\/section-0000$/);
+      assert.match(section.narration.url, /narration\/section-0000-[0-9a-f]{24}$/, 'narration audio gets an unguessable name');
       res = await api('/books?audio=narration', { token: bob });
       assert.equal(res.body.total, 1);
 
@@ -861,5 +866,221 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
 
     // Without the Hub settings the webhook route is closed.
     assert.equal((await fetch(`${base}/payments/hub-webhook`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 404);
+  });
+
+  let freeBook;
+
+  test('admins manage categories and books are filed under them', async () => {
+    const create = (body, token = alice) => api('/categories', { token, method: 'POST', body });
+    assert.equal((await create({ name: 'Fiction' }, carol)).status, 403);
+    assert.equal((await create({ name: 'Fiction' }, null)).status, 401);
+    let res = await create({ name: 'Science & Nature', description: 'How the world works' });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const science = res.body.category;
+    assert.equal(science.slug, 'science-nature');
+    assert.equal(science.books, 0);
+    const fiction = (await create({ name: 'Fiction' })).body.category;
+    res = await create({ name: ' fiction ' });
+    assert.equal(res.status, 409);
+    assert.match(res.body.error, /already a category/);
+    assert.equal((await create({ name: '!!!' })).status, 400);
+
+    // Uploaders pick a category from the list.
+    res = await api('/books', { token: carol, method: 'POST', form: bookForm('story.txt', 'CHAPTER 1\n\nOnce upon a time.', { category: fiction.id }) });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const story = res.body.book;
+    assert.deepEqual(story.category, { id: fiction.id, name: 'Fiction', slug: 'fiction' });
+    res = await api('/books', { token: carol, method: 'POST', form: bookForm('facts.txt', 'Water boils.', { category: '0123456789abcdef01234567' }) });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /no longer exists/);
+    res = await api('/books', { token: carol, method: 'POST', form: bookForm('facts.txt', 'Water boils at 100 degrees.') });
+    freeBook = res.body.book;
+    assert.equal(freeBook.category, null);
+    res = await api(`/books/${freeBook.id}`, { token: carol, method: 'PATCH', body: { category: science.id } });
+    assert.equal(res.body.book.category.slug, 'science-nature');
+
+    // Anyone can browse by category.
+    res = await api('/books?category=science-nature');
+    assert.deepEqual(res.body.books.map((b) => b.id), [freeBook.id]);
+    assert.equal(res.body.books[0].category.name, 'Science & Nature');
+    assert.equal((await api('/books?category=nope')).body.total, 0);
+    res = await api('/categories');
+    assert.deepEqual(res.body.categories.map((c) => [c.name, c.books]), [['Fiction', 1], ['Science & Nature', 1]]);
+
+    // Renaming changes the link but keeps the books.
+    res = await api(`/categories/${science.id}`, { token: alice, method: 'PATCH', body: { name: 'Science' } });
+    assert.equal(res.body.category.slug, 'science');
+    assert.equal(res.body.category.books, 1);
+    assert.equal((await api('/books?category=science')).body.total, 1);
+    assert.equal((await api(`/categories/${science.id}`, { token: alice, method: 'PATCH', body: { name: 'FICTION' } })).status, 409);
+
+    // A book can leave its category; deleting a category keeps its books in the library.
+    res = await api(`/books/${freeBook.id}`, { token: carol, method: 'PATCH', body: { category: null } });
+    assert.equal(res.body.book.category, null);
+    assert.equal((await api(`/categories/${fiction.id}`, { token: carol, method: 'DELETE' })).status, 403);
+    assert.equal((await api(`/categories/${fiction.id}`, { token: alice, method: 'DELETE' })).status, 204);
+    res = await api(`/books/${story.id}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.book.category, null);
+    assert.deepEqual((await api('/categories')).body.categories.map((c) => c.name), ['Science']);
+  });
+
+  test('premium books lock the chapters an admin picks until the reader pays', async () => {
+    const { Book } = await import('../src/models/Book.js');
+    const { Section } = await import('../src/models/Section.js');
+    const { setMpesaTransport } = await import('../src/services/mpesa.js');
+    const erin = (await api('/auth/register', { method: 'POST', body: { name: 'Erin', email: 'erin@example.com', password: 'password6' } })).body.token;
+
+    // Carol uploads a book big enough to be stored in parts.
+    const chapters = ['One', 'Two', 'Three', 'Four'].map((title) => ({
+      title,
+      paragraphs: [`Chapter ${title} begins.`, crypto.randomBytes(1500).toString('hex')],
+    }));
+    let res = await api('/books', { token: carol, method: 'POST', form: bookForm('paid.epub', await makeEpub(chapters, { title: 'Paid Book' })) });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const book = res.body.book;
+    assert.equal(book.sectionCount, 4);
+    assert.ok(book.file.parts.length > 1);
+    assert.equal(book.premium, null);
+    assert.equal(book.unlocked, true);
+    // Files stored before private names existed: an audiobook and narration for chapters 1 and 3.
+    const folder = `a-read/books/${book.id}`;
+    const legacy = (publicId) => ({ url: `https://res.cloudinary.com/demo/video/upload/v1/${publicId}`, publicId });
+    await Book.updateOne({ _id: book.id }, { $set: { audiobook: { ...legacy(`${folder}/audiobook-abc`), resourceType: 'video', duration: 60 } } });
+    for (const index of [0, 2]) {
+      const narration = { ...legacy(`${folder}/narration/section-000${index}`), voice: 'en-US-Neural2-F', duration: 3, marks: [0] };
+      await Section.updateOne({ book: book.id, index }, { $set: { narration } });
+    }
+
+    // Only admins set the price and the locked chapters.
+    const premium = (body, token = alice) => api(`/admin/books/${book.id}/premium`, { token, method: 'PUT', body });
+    assert.deepEqual((await api(`/admin/books/${book.id}/premium`, { token: alice })).body.premium, { enabled: false, price: null, lockedSections: [], updatedAt: null });
+    assert.equal((await premium({ enabled: true, price: 200, lockedSections: [2, 3] }, carol)).status, 403);
+    assert.match((await premium({ enabled: true, price: 200, lockedSections: [] })).body.error, /at least one chapter/);
+    assert.match((await premium({ enabled: true, lockedSections: [2] })).body.error, /Set the price/);
+    assert.match((await premium({ enabled: true, price: 5, lockedSections: [2] })).body.error, /lowest price is KES 10/);
+    assert.match((await premium({ enabled: true, price: 200, lockedSections: [2, 9] })).body.error, /part 10/);
+    res = await premium({ enabled: true, price: 200, lockedSections: [3, 2, 3] });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.premium.enabled, true);
+    assert.equal(res.body.premium.price, 200);
+    assert.deepEqual(res.body.premium.lockedSections, [2, 3]);
+
+    // The original file, the audiobook and the locked chapters' narration move to unguessable names.
+    const stored = await Book.findById(book.id);
+    assert.match(stored.file.publicId, /\/book-[0-9a-f]{24}\.epub$/);
+    assert.ok(stored.file.parts.every((part, i) => part.publicId === `${stored.file.publicId}.part${i}`));
+    assert.equal(stored.file.url, stored.file.parts[0].url);
+    assert.match(stored.audiobook.publicId, /audiobook-abc-[0-9a-f]{24}$/);
+    const narrated = await Section.find({ book: book.id, index: { $in: [0, 2] } }).sort({ index: 1 });
+    assert.equal(narrated[0].narration.publicId, `${folder}/narration/section-0000`, 'free chapters stay where they are');
+    assert.match(narrated[1].narration.publicId, /narration\/section-0002-[0-9a-f]{24}$/);
+    const moves = renamed.length;
+    assert.equal((await premium({ enabled: true, price: 200, lockedSections: [2, 3] })).status, 200);
+    assert.equal(renamed.length, moves, 'files are only moved once');
+
+    // A reader sees which chapters are locked, but can't open them, the file or the audiobook.
+    res = await api(`/books/${book.id}`, { token: erin });
+    assert.deepEqual(res.body.book.premium, { price: 200, lockedSections: [2, 3] });
+    assert.equal(res.body.book.unlocked, false);
+    assert.equal(res.body.book.file, undefined);
+    assert.deepEqual(res.body.book.audiobook, { duration: 60 });
+    assert.deepEqual((await api(`/books/${book.id}/sections`, { token: erin })).body.sections.map((s) => s.locked), [false, false, true, true]);
+    assert.equal((await api(`/books/${book.id}/sections/1`, { token: erin })).status, 200);
+    res = await api(`/books/${book.id}/sections/2`, { token: erin });
+    assert.equal(res.status, 402);
+    assert.deepEqual(res.body.details, { code: 'PREMIUM_LOCKED', price: 200 });
+    res = await api(`/books/${book.id}/offline`, { token: erin });
+    assert.deepEqual(res.body.sections.map((s) => Boolean(s.locked)), [false, false, true, true]);
+    assert.deepEqual(res.body.sections[2].paragraphs, []);
+    assert.equal(res.body.sections[2].narration, undefined);
+    assert.equal(res.body.sections[0].narration.publicId, `${folder}/narration/section-0000`);
+    res = await api('/books?access=premium', { token: erin });
+    assert.deepEqual(res.body.books.map((b) => [b.id, b.unlocked, b.file]), [[book.id, false, undefined]]);
+    assert.ok((await api('/books?access=free')).body.books.some((b) => b.id === freeBook.id));
+    assert.deepEqual((await api(`/books/${book.id}/sections`)).body.sections.map((s) => s.locked), [false, false, true, true]);
+    await api(`/progress/${book.id}`, { token: erin, method: 'PUT', body: { sectionIndex: 1, percent: 30 } });
+    const shelf = (await api('/progress', { token: erin })).body.items.find((item) => item.book.id === book.id).book;
+    assert.equal(shelf.audiobook, undefined, 'continue reading never hands out the audiobook');
+    assert.equal(shelf.hasAudio, true);
+
+    // The uploader and admins can always read everything.
+    for (const token of [carol, alice]) {
+      res = await api(`/books/${book.id}`, { token });
+      assert.equal(res.body.book.unlocked, true);
+      assert.ok(res.body.book.file.url);
+      assert.equal((await api(`/books/${book.id}/sections/2`, { token })).status, 200);
+    }
+
+    // Erin pays the book's price by M-Pesa.
+    const calls = [];
+    setMpesaTransport(async (url, { body }) => {
+      calls.push({ url, body });
+      if (url.includes('/oauth/')) return { status: 200, json: { access_token: 'token', expires_in: '3599' } };
+      return { status: 200, json: { ResponseCode: '0', CheckoutRequestID: 'ws_CO_book', MerchantRequestID: 'm_book' } };
+    });
+    let payment;
+    try {
+      res = await api('/payments/stk', { method: 'POST', body: { phone: '0712000001', bookId: book.id } });
+      assert.equal(res.status, 401);
+      res = await api('/payments/stk', { token: erin, method: 'POST', body: { phone: '0712000001', bookId: freeBook.id } });
+      assert.match(res.body.error, /free to read/);
+      res = await api('/payments/stk', { token: carol, method: 'POST', body: { phone: '0712000001', bookId: book.id } });
+      assert.equal(res.status, 409, 'the uploader can already read it');
+      res = await api('/payments/stk', { token: erin, method: 'POST', body: { phone: '0712000001', bookId: book.id, amount: 10 } });
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+      payment = res.body.payment;
+      assert.equal(payment.amount, 200, 'the price comes from the book, not the browser');
+      const push = calls.find((c) => c.url.endsWith('/processrequest'));
+      assert.equal(push.body.Amount, 200);
+      assert.equal(push.body.TransactionDesc, 'A-Read book');
+      assert.equal((await api(`/books/${book.id}/sections/2`, { token: erin })).status, 402, 'locked until M-Pesa confirms');
+      await api('/payments/mpesa/callback/callback-secret', {
+        method: 'POST',
+        body: {
+          Body: {
+            stkCallback: {
+              MerchantRequestID: 'm_book',
+              CheckoutRequestID: 'ws_CO_book',
+              ResultCode: 0,
+              ResultDesc: 'Paid',
+              CallbackMetadata: { Item: [{ Name: 'Amount', Value: 200 }, { Name: 'MpesaReceiptNumber', Value: 'TJKBOOK001' }] },
+            },
+          },
+        },
+      });
+      assert.equal((await api(`/payments/${payment.id}`)).body.payment.status, 'paid');
+    } finally {
+      setMpesaTransport(null);
+    }
+
+    // Paid: every chapter, the file and the audiobook open for Erin (and only for Erin).
+    res = await api(`/books/${book.id}`, { token: erin });
+    assert.equal(res.body.book.unlocked, true);
+    assert.ok(res.body.book.file.url);
+    assert.ok(res.body.book.audiobook.url);
+    assert.deepEqual((await api(`/books/${book.id}/sections`, { token: erin })).body.sections.map((s) => s.locked), [false, false, false, false]);
+    assert.equal((await api(`/books/${book.id}/sections/2`, { token: erin })).status, 200);
+    assert.equal((await api('/books?access=premium', { token: erin })).body.books[0].unlocked, true);
+    assert.equal((await api(`/books/${book.id}`)).body.book.unlocked, false);
+    assert.equal((await api('/payments/stk', { token: erin, method: 'POST', body: { phone: '0712000002', bookId: book.id } })).status, 409);
+
+    // Admins see what each premium book has sold.
+    res = await api('/admin/premium', { token: alice });
+    assert.deepEqual(res.body.books.find((b) => b.id === book.id).sales, { amount: 200, count: 1 });
+    assert.equal((await api('/admin/premium', { token: erin })).status, 403);
+    res = await api('/payments?purpose=book', { token: alice });
+    assert.deepEqual(res.body.payments.map((p) => [p.book.title, p.status]), [['Paid Book', 'paid']]);
+    assert.deepEqual(res.body.totals.byPurpose.book, { amount: 200, count: 1 });
+    assert.equal((await api('/admin/stats', { token: alice })).body.premium, 1);
+
+    // Turning premium off frees the book for everyone and keeps the settings for later.
+    res = await premium({ enabled: false });
+    assert.deepEqual(res.body.premium, { ...res.body.premium, enabled: false, price: 200, lockedSections: [2, 3] });
+    res = await api(`/books/${book.id}`);
+    assert.equal(res.body.book.premium, null);
+    assert.equal(res.body.book.unlocked, true);
+    assert.equal((await api('/books?access=premium')).body.total, 0);
+    assert.ok((await api('/admin/premium', { token: alice })).body.books.some((b) => b.id === book.id && !b.premium.enabled));
   });
 });

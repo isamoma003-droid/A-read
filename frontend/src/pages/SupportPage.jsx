@@ -1,30 +1,14 @@
 import { useState } from 'react';
-import { CircleAlert, CircleCheck, CircleX, Heart, Smartphone } from 'lucide-react';
+import { Heart, Smartphone } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
-import { usePayment, usePaymentConfig } from '../api/queries.js';
+import { usePaymentConfig } from '../api/queries.js';
 import { ErrorMessage, Spinner } from '../components/Feedback.jsx';
+import { PaymentStatus, savePhone, savedPhone } from '../components/MpesaPayment.jsx';
 import { formatKes } from '../utils/format.js';
 import { useDocumentTitle } from '../utils/useDocumentTitle.js';
 
 const AMOUNTS = [50, 100, 200, 500, 1000];
-const PHONE_KEY = 'a-read-mpesa-phone';
-
-function savedPhone() {
-  try {
-    return localStorage.getItem(PHONE_KEY) || '';
-  } catch {
-    return '';
-  }
-}
-
-function savePhone(phone) {
-  try {
-    localStorage.setItem(PHONE_KEY, phone);
-  } catch {
-    // ignore
-  }
-}
 
 export default function SupportPage() {
   useDocumentTitle('Support A-Read');
@@ -111,51 +95,6 @@ export default function SupportPage() {
 
       {config?.number && <ManualPayment config={config} />}
     </div>
-  );
-}
-
-function PaymentStatus({ id, onRetry }) {
-  const { data: payment, error } = usePayment(id);
-  if (error) return <ErrorMessage error={error} />;
-  if (!payment || payment.status === 'pending') {
-    return (
-      <section className="panel payment-status" aria-live="polite">
-        <Smartphone size={40} strokeWidth={1.5} aria-hidden="true" />
-        <h2>Check your phone</h2>
-        <p>Enter your M-Pesa PIN on the prompt to pay {payment ? formatKes(payment.amount) : ''}.</p>
-        <Spinner label="Waiting for M-Pesa…" />
-      </section>
-    );
-  }
-  if (payment.status === 'paid') {
-    return (
-      <section className="panel payment-status payment-paid" aria-live="polite">
-        <CircleCheck size={40} strokeWidth={1.5} aria-hidden="true" />
-        <h2>Thank you!</h2>
-        <p>We received {formatKes(payment.amount)}.</p>
-        {payment.receipt && <p className="muted small">M-Pesa receipt {payment.receipt}</p>}
-      </section>
-    );
-  }
-  if (payment.status === 'disputed') {
-    return (
-      <section className="panel payment-status payment-disputed" aria-live="polite">
-        <CircleAlert size={40} strokeWidth={1.5} aria-hidden="true" />
-        <h2>We're checking this payment</h2>
-        <p>{payment.message}</p>
-        {payment.receipt && <p className="muted small">M-Pesa receipt {payment.receipt}</p>}
-      </section>
-    );
-  }
-  return (
-    <section className="panel payment-status payment-failed" aria-live="polite">
-      <CircleX size={40} strokeWidth={1.5} aria-hidden="true" />
-      <h2>Payment not completed</h2>
-      <p>{payment.message}</p>
-      <button type="button" className="button button-primary" onClick={onRetry}>
-        Try again
-      </button>
-    </section>
   );
 }
 

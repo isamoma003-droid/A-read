@@ -7,11 +7,13 @@ import { env } from '../config/env.js';
 import { requireAdmin } from '../middleware/admin.js';
 import { optionalAuth, requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
+import { Book } from '../models/Book.js';
 import { Payment } from '../models/Payment.js';
 import { Promotion } from '../models/Promotion.js';
 import { applyHubPayment, hub, hubConfig, hubEnabled, hubStatus, verifyHubWebhook } from '../services/hub.js';
 import { mpesaEnabled, normalizePhone, parseCallback, resultMessage, stkPush, stkQuery } from '../services/mpesa.js';
-import { HttpError, badRequest, notFound } from '../utils/httpError.js';
+import { isPremium, lockedSectionsFor } from '../services/premium.js';
+import { HttpError, badRequest, conflict, notFound, unauthorized } from '../utils/httpError.js';
 
 const router = Router();
 
@@ -99,22 +101,27 @@ const stkSchema = z.object({
     .number()
     .int('Enter a whole number of shillings')
     .min(env.mpesa.minAmount, `The smallest amount is KES ${env.mpesa.minAmount}`)
-    .max(env.mpesa.maxAmount, `The largest amount is KES ${env.mpesa.maxAmount.toLocaleString('en-KE')}`),
+    .max(env.mpesa.maxAmount, `The largest amount is KES ${env.mpesa.maxAmount.toLocaleString('en-KE')}`)
+    .optional(),
   promotionId: z.string().regex(/^[a-f0-9]{24}$/i).nullable().optional(),
+  // Unlocking a premium book: the amount is the book's price, whatever the browser sends.
+  bookId: z.string().regex(/^[a-f0-9]{24}$/i).nullable().optional(),
 });
+
+const describePayment = (book) => (book ? `Unlock "${book.title.slice(0, 60)}" on A-Read` : 'Support A-Read');
 
 // Asks ISA Tech Hub to send the prompt for `payment`. A-Read's own payment id is the Hub reference
 // and the idempotency key, so a retried request can never prompt the payer twice.
-async function startThroughHub(payment, promotion) {
+async function startThroughHub(payment, { promotion, book }) {
   try {
     const { payment: remote } = await hub().createPayment({
       phone: payment.phone,
       amount: payment.amount,
       reference: payment.id,
       purpose: payment.purpose,
-      description: 'Support A-Read',
+      description: describePayment(book),
       idempotencyKey: payment.id,
-      metadata: { promotion: promotion?.id ?? null, reader: payment.user ? 'signed-in' : 'guest' },
+      metadata: { promotion: promotion?.id ?? null, reader: payment.user ? 'signed-in' : 'guest', ...(book ? { book: book.id } : {}) },
     });
     applyHubPayment(payment, remote);
     await payment.save();
@@ -130,9 +137,10 @@ async function startThroughHub(payment, promotion) {
   }
 }
 
-async function startThroughDaraja(payment) {
+async function startThroughDaraja(payment, { book }) {
   try {
-    const result = await stkPush({ phone: payment.phone, amount: payment.amount, description: 'Support A-Read' });
+    // Daraja keeps only 13 characters of the description.
+    const result = await stkPush({ phone: payment.phone, amount: payment.amount, description: book ? 'A-Read book' : 'Support A-Read' });
     payment.checkoutRequestId = result.checkoutRequestId;
     payment.merchantRequestId = result.merchantRequestId;
     await payment.save();
@@ -149,27 +157,42 @@ async function startThroughDaraja(payment) {
 router.post('/stk', stkLimiter, optionalAuth, validate(stkSchema), async (req, res) => {
   const viaHub = hubEnabled();
   if (!viaHub && !mpesaEnabled()) throw new HttpError(503, 'M-Pesa payments are not set up yet');
-  const { amount, promotionId } = req.valid.body;
+  const { promotionId, bookId } = req.valid.body;
+  let { amount } = req.valid.body;
   const phone = normalizePhone(req.valid.body.phone);
   if (!phone) throw badRequest('Enter a Safaricom number like 0712 345 678');
+
+  // A premium book is unlocked for the signed-in reader who pays for it, at the admin's price.
+  let book = null;
+  if (bookId) {
+    if (!req.user) throw unauthorized('Sign in to unlock this book');
+    book = await Book.findById(bookId).select('title premium uploadedBy');
+    if (!book) throw notFound('Book not found');
+    if (!isPremium(book)) throw badRequest('This book is free to read');
+    if (!(await lockedSectionsFor(book, req.user)).size) throw conflict('You have already unlocked this book');
+    amount = book.premium.price;
+  } else if (amount === undefined) {
+    throw badRequest('Enter an amount');
+  }
 
   // One prompt at a time per phone.
   const recent = await Payment.exists({ phone, status: 'pending', createdAt: { $gt: new Date(Date.now() - 60_000) } });
   if (recent) throw new HttpError(429, 'A payment request was just sent to this phone. Check it, or try again in a minute.');
 
   // The purpose comes from the promotion an admin set up, never from the browser.
-  const promotion = promotionId ? await Promotion.findById(promotionId).select('purpose') : null;
+  const promotion = promotionId && !book ? await Promotion.findById(promotionId).select('purpose') : null;
   const payment = await Payment.create({
     user: req.user?._id,
     promotion: promotion?._id,
-    purpose: promotion?.purpose || 'donation',
+    book: book?._id,
+    purpose: book ? 'book' : promotion?.purpose || 'donation',
     phone,
     amount,
     provider: viaHub ? 'hub' : 'daraja',
   });
 
-  if (viaHub) await startThroughHub(payment, promotion);
-  else await startThroughDaraja(payment);
+  if (viaHub) await startThroughHub(payment, { promotion, book });
+  else await startThroughDaraja(payment, { book });
   res.status(201).json({ payment: publicPayment(payment) });
 });
 
@@ -238,7 +261,12 @@ router.get('/', requireAuth, requireAdmin, validate(listSchema, 'query'), async 
   startOfMonth.setUTCDate(1);
   startOfMonth.setUTCHours(0, 0, 0, 0);
   const [payments, totals, thisMonth] = await Promise.all([
-    Payment.find(filter).sort({ createdAt: -1 }).limit(200).populate('user', 'name email').populate('promotion', 'title'),
+    Payment.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .populate('user', 'name email')
+      .populate('promotion', 'title')
+      .populate('book', 'title'),
     Payment.aggregate([{ $match: { status: 'paid' } }, { $group: { _id: '$purpose', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
     Payment.aggregate([{ $match: { status: 'paid', paidAt: { $gte: startOfMonth } } }, { $group: { _id: null, amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
   ]);

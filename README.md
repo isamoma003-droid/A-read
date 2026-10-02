@@ -11,9 +11,11 @@ A shared book library where people upload books and then **read them on screen o
 - **Follow along**: the sentence being spoken is highlighted and kept in view (device voice and cloud narration).
 - **Pick up where you left off**: reading and listening position is saved per user, plus private bookmarks with notes.
 - **Library**: covers (from the PDF's first page, the EPUB's own cover, an upload, or generated), search, format/audio/tag filters, and sorting.
+- **Categories**: admins keep a list of categories (Fiction, History, Children…). Uploaders file each book under one, and readers browse the library by category (`/?category=fiction`).
+- **Premium books**: admins pick books to sell, set a price, and choose which chapters stay locked (for example, "first 3 chapters free, lock the rest"). Readers see every chapter title, read the free ones, and pay once by M-Pesa to unlock the whole book on all their devices. The uploader and admins can always read everything.
 - **Batch uploads** of up to 20 books at a time, up to 100 MB each, even on Cloudinary's free plan (large files are stored in parts).
 - **Share** any book to WhatsApp, Telegram, Facebook, X, email or a copied link, with a title-and-cover preview.
-- **Admin panel** (`/admin`): library stats, user management (promote/demote admins, delete accounts), and book moderation.
+- **Admin panel** (`/admin`): library stats, user management (promote/demote admins, delete accounts), book moderation, categories, and premium books with what each has sold.
 - **Support popups + M-Pesa**: admins schedule a "support us" popup (start and end time, optional daily hours, audience, how often each reader sees it, and whether it closes itself after N seconds). It sits in a corner and never blocks reading. The **Support** page (`/support`) takes M-Pesa payments by STK Push to your till, and admins see every payment and the total raised per popup.
 
 - **Required reading**: admins assign books to everyone or to chosen readers, with a due date and a note (optionally emailed). Readers get a Required reading list; admins see who has finished.
@@ -36,12 +38,13 @@ A-Read/
 ├── backend/
 │   ├── src/
 │   │   ├── config/        env, MongoDB, Cloudinary
-│   │   ├── models/        User, Book, Section, Progress, Bookmark
-│   │   ├── routes/        auth, books (+ sections, audio, bookmarks), progress, tts
+│   │   ├── models/        User, Book, Category, Section, Progress, Bookmark, Payment…
+│   │   ├── routes/        auth, books (+ sections, audio, bookmarks), categories, progress, payments, admin, tts…
 │   │   ├── services/
 │   │   │   ├── extract/   PDF, EPUB and TXT → sections of sentences
 │   │   │   ├── books.js   upload / cover / audiobook / delete
 │   │   │   ├── narration.js  Google TTS background jobs
+│   │   │   ├── premium.js     who can open which chapters; private file names for premium books
 │   │   │   └── storage.js Cloudinary helpers
 │   │   ├── app.js
 │   │   └── server.js
@@ -129,7 +132,16 @@ A-Read keeps its own record of each payment (`provider: "hub"`, plus the Hub's p
 
 Until all of these are set, the Support page only shows the till number (when `MPESA_TILL_NUMBER` is set) for paying from the M-Pesa menu. Payments made that way aren't recorded in A-Read.
 
-Admins create popups under **Admin → Popups** (with a live preview) and see payments under **Admin → Payments**. Each payment records a **purpose**: `donation` by default, or a name set on the popup (e.g. `premium`). To unlock a paid feature later, check `await Payment.hasPaid(userId, 'premium', minAmount)` on the backend. The purpose always comes from the admin's popup, never from the browser.
+Admins create popups under **Admin → Popups** (with a live preview) and see payments under **Admin → Payments**. Each payment records a **purpose**: `donation` by default, a name set on the popup (e.g. `premium`), or `book` when it unlocks a premium book. To unlock a paid feature later, check `await Payment.hasPaid(userId, 'premium', minAmount)` on the backend. The purpose (and a book's price) always comes from what the admin set up, never from the browser.
+
+### 6b. Premium books
+
+Under **Admin → Premium**, search for a book, set the price in KES (within `MPESA_MIN_AMOUNT`–`MPESA_MAX_AMOUNT`) and tick the chapters to lock. PDFs are split by page, so a PDF with an outline lists its top-level chapters with their page ranges. "Keep the first N free" locks everything after a free preview. Admins also reach this from a book's page (**Premium settings**).
+
+- **What readers get.** The library and book page show a crown and the price; locked chapters show a lock in the contents. Opening one shows the unlock box: the reader enters their M-Pesa number, confirms the PIN prompt, and the book unlocks as soon as M-Pesa (directly or through ISA Tech Hub) confirms. Audio skips locked chapters.
+- **What the server enforces.** Locked chapters' text and narration are never sent (`402` from `/api/books/:id/sections/:index`, and empty in the offline download). The original PDF/EPUB file and the audiobook contain every chapter, so they are only sent to readers who can open the whole book; until then the reader uses the text view.
+- **Private file addresses.** Cloudinary URLs are public. When a book becomes premium, A-Read renames its original file, its audiobook and its locked chapters' narration on Cloudinary to unguessable names (new narration and audiobooks get them from the start). If Cloudinary can't be reached, the book is not made premium and the admin sees why.
+- **Turning premium off** frees the book for everyone and keeps the price and chapters for next time. Readers who paid keep access if it is turned back on.
 
 ### 7. Run it
 
@@ -169,7 +181,7 @@ npm test     # unit tests: text splitting, PDF/EPUB/TXT extraction, SSML chunkin
 MONGODB_URI_TEST=mongodb://127.0.0.1:27017/a-read-test npm test   # also runs the API tests
 ```
 
-The API tests drive the real Express app against a real database, with Cloudinary and Google stubbed out. They cover auth, uploads of all three formats, search and filters, permissions, progress, bookmarks, audiobooks, narration jobs, deletion, support popups and M-Pesa payments, both direct (Daraja is stubbed) and through ISA Tech Hub (a stand-in Hub server). **Use a throwaway database:** the tests drop it.
+The API tests drive the real Express app against a real database, with Cloudinary and Google stubbed out. They cover auth, uploads of all three formats, search and filters, permissions, progress, bookmarks, audiobooks, narration jobs, deletion, support popups, M-Pesa payments, both direct (Daraja is stubbed) and through ISA Tech Hub (a stand-in Hub server), categories, and premium books (locking, file renaming, unlocking by payment). **Use a throwaway database:** the tests drop it.
 
 ```bash
 npm run lint   # frontend ESLint (React hooks rules)
@@ -193,21 +205,23 @@ All endpoints except register/login need `Authorization: Bearer <token>`.
 | Method & path | Purpose |
 | --- | --- |
 | `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me` | Accounts |
-| `GET /api/books?q=&format=&audio=&tag=&mine=&sort=&page=` | Library search & filters |
-| `POST /api/books` (multipart: `file`, optional `cover`, `title`, `author`, `description`, `language`, `tags`) | Upload a book |
+| `GET /api/books?q=&format=&audio=&tag=&category=&access=free\|premium&mine=&sort=&page=` | Library search & filters (`category` is the slug) |
+| `POST /api/books` (multipart: `file`, optional `cover`, `title`, `author`, `description`, `language`, `tags`, `category`) | Upload a book |
 | `GET / PATCH / DELETE /api/books/:id` | Book details, edit, delete |
 | `PUT /api/books/:id/cover` (multipart `cover`) | Replace the cover |
-| `GET /api/books/:id/sections`, `GET /api/books/:id/sections/:index` | Table of sections; one section's text + narration timings |
+| `GET /api/books/:id/sections`, `GET /api/books/:id/sections/:index` | Table of sections (each with `locked`); one section's text + narration timings (`402` while locked) |
 | `POST / DELETE /api/books/:id/audiobook` (multipart `audio`) | Attach / remove an audiobook |
 | `GET / POST / DELETE /api/books/:id/narration` (`?purge=true` deletes audio) | Cloud narration status, start/resume, stop |
 | `GET /api/tts/status`, `GET /api/tts/voices?language=en` | Narration availability and voices |
 | `GET /api/progress`, `GET / PUT /api/progress/:bookId` | Continue reading; per-book position |
 | `GET /api/admin/stats`, `GET /api/admin/users?q=`, `PATCH / DELETE /api/admin/users/:id` | Admin only: stats, roles, account removal (`?deleteBooks=true`) |
+| `GET /api/categories` (public), `POST /api/categories`, `PATCH / DELETE /api/categories/:id` | Categories with book counts; admin only to change |
+| `GET /api/admin/premium`, `GET / PUT /api/admin/books/:id/premium` (`enabled`, `price`, `lockedSections`) | Admin only: premium books and sales; one book's price and locked chapters |
 | `GET /share/books/:id` (public) | Link-preview page that redirects to the book |
 | `GET / POST /api/books/:id/bookmarks`, `PATCH / DELETE /api/bookmarks/:id` | Private bookmarks |
 | `GET /api/promotions/active` (public) | The support popup to show this visitor now, if any |
 | `GET / POST /api/promotions`, `PATCH / DELETE /api/promotions/:id` | Admin only: schedule, edit, pause and delete popups |
-| `GET /api/payments/config` (public), `POST /api/payments/stk` (public), `GET /api/payments/:id` (public) | M-Pesa settings, start an STK Push, poll its status |
+| `GET /api/payments/config` (public), `POST /api/payments/stk` (public; with `bookId` it unlocks a premium book for the signed-in reader at the book's price), `GET /api/payments/:id` (public) | M-Pesa settings, start an STK Push, poll its status |
 | `POST /api/payments/hub-webhook` | ISA Tech Hub's signed webhook (`ISA-Signature` header) |
 | `POST /api/payments/mpesa/callback/:secret` | Safaricom's result callback (direct Daraja only) |
 | `GET /api/payments?status=` | Admin only: payments and totals |
@@ -218,4 +232,5 @@ All endpoints except register/login need `Authorization: Bearer <token>`.
 - **Device voices** depend on the browser and OS. Chrome, Edge and Safari have good voices; some Linux browsers have none.
 - **Audiobook audio** isn't synced to the text: you get one timeline for the whole file.
 - **Narration jobs** run inside the API process. For heavy use, move them to a job queue (e.g. BullMQ).
+- **Premium files** are protected by unguessable Cloudinary addresses, not signed or expiring URLs, so a reader who unlocked a book could share its file link. Offline copies saved on a device before a book became premium stay on that device.
 - The login token is kept in `localStorage`. That's simple and works across domains, but an HttpOnly cookie is stronger against XSS if you host the frontend and API on the same domain.

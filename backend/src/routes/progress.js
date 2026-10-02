@@ -9,18 +9,24 @@ import { notFound } from '../utils/httpError.js';
 const router = Router();
 router.use(requireAuth);
 
+function shelfBook(book) {
+  const { audiobook, ...json } = book.toJSON();
+  return { ...json, hasAudio: Boolean(audiobook?.url) || ['ready', 'partial'].includes(json.narration?.status) };
+}
+
 // "Continue reading": the user's most recently opened books.
 router.get('/', async (req, res) => {
   const items = await Progress.find({ user: req.user._id })
     .sort({ updatedAt: -1 })
     .limit(12)
     .populate('book', 'title author cover format sectionCount narration.status audiobook.url');
-  // Finished books drop off "continue reading".
+  // Finished books drop off "continue reading". The shelf only needs to know a book has audio:
+  // an audiobook's URL isn't sent, since a premium book's audiobook holds its locked chapters.
   res.json({
     items: items
       .filter((item) => item.book && !item.completedAt)
       .map((item) => ({
-        book: item.book,
+        book: shelfBook(item.book),
         percent: item.percent,
         sectionIndex: item.sectionIndex,
         updatedAt: item.updatedAt,
