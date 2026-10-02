@@ -29,6 +29,7 @@ export const keys = {
   systemConfig: ['system', 'config'],
   systemStatus: ['admin', 'system'],
   adminQuotes: ['admin', 'quotes'],
+  categoryStarters: ['admin', 'category-starters'],
 };
 
 function toQuery(params) {
@@ -186,3 +187,7 @@ export const useSystemConfig = () =>
 export const useSystemStatus = () => useQuery({ queryKey: keys.systemStatus, queryFn: () => api('/system/status') });
 
 export const useAdminQuotes = () => useQuery({ queryKey: keys.adminQuotes, queryFn: () => api('/quotes').then((r) => r.quotes) });
+
+// Common categories the library doesn't have yet (admins can add them in one click).
+export const useCategoryStarters = () =>
+  useQuery({ queryKey: keys.categoryStarters, queryFn: () => api('/categories/starters').then((r) => r.starters) });

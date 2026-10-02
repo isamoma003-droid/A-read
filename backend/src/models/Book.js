@@ -76,6 +76,11 @@ const bookSchema = new Schema(
     language: { type: String, trim: true, maxlength: 20, default: '' },
     tags: { type: [String], default: [] },
     category: { type: Schema.Types.ObjectId, ref: 'Category', index: true },
+    // 'auto' when A-Read picked the category from the book itself; 'manual' (or unset, for books
+    // filed before automatic picks existed) when a person chose it.
+    categorySource: { type: String, enum: ['manual', 'auto'] },
+    // A summary of the book's words used to work out its category (services/categorize.js).
+    textProfile: { type: Schema.Types.Mixed, select: false },
     premium: premiumSchema,
     format: { type: String, enum: ['pdf', 'epub', 'txt'], required: true },
     originalName: String,

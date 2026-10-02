@@ -19,6 +19,7 @@ import {
   removeAudiobook,
   replaceCover,
 } from '../services/books.js';
+import { buildClassifier } from '../services/categorize.js';
 import { deleteNarration, isNarrating, startNarration, stopNarration } from '../services/narration.js';
 import { isPremium, lockedError, lockedFor, lockedSectionsFor, purchasedBookIds } from '../services/premium.js';
 import { getSettings } from '../services/settings.js';
@@ -60,6 +61,7 @@ async function findEditableBook(req) {
 // counts as paid for, which never shows more than it should.
 function present(book, user, progress, locked = lockedFor(book, user, new Set())) {
   const json = book.toJSON();
+  delete json.textProfile;
   if (!user || locked.size) {
     // Guests see the catalogue entry, not the downloadable files. Nor do readers who haven't
     // unlocked a premium book: its original file and audiobook include the locked chapters.
@@ -104,7 +106,8 @@ router.get('/', validate(listSchema, 'query'), async (req, res) => {
   }
   if (format) and.push({ format });
   if (tag) and.push({ tags: tag });
-  if (category) {
+  if (category === 'none') and.push({ category: null });
+  else if (category) {
     const found = await Category.findOne({ slug: category }).select('_id');
     and.push(found ? { category: found._id } : { _id: null });
   }
@@ -168,9 +171,26 @@ async function checkCategory(id) {
   return id || undefined;
 }
 
+// No category chosen at upload: let A-Read work it out from the book, if it's confident.
+async function pickCategory(book) {
+  const categories = await Category.find();
+  if (!categories.length) return;
+  try {
+    const { classify } = await buildClassifier(categories);
+    const { category } = classify(book, book.textProfile);
+    if (!category) return;
+    book.category = category.id;
+    book.categorySource = 'auto';
+    await book.save();
+  } catch (err) {
+    console.warn(`Could not pick a category for book ${book._id}: ${err.message}`);
+  }
+}
+
 router.post('/', signedIn, mayUpload, uploadBook, validate(createSchema), async (req, res) => {
   const fields = { ...req.valid.body, category: await checkCategory(req.valid.body.category) };
   const book = await createBook({ user: req.user, files: req.files, fields });
+  if (!book.category) await pickCategory(book);
   await book.populate([{ path: 'uploadedBy', select: 'name' }, { path: 'category', select: 'name slug' }]);
   res.status(201).json({ book: present(book, req.user) });
 });
@@ -206,7 +226,10 @@ router.patch('/:id', signedIn, validate(updateSchema), async (req, res) => {
   const { tags, category, ...fields } = req.valid.body;
   book.set(fields);
   if (tags !== undefined) book.tags = parseTags(tags);
-  if (category !== undefined) book.category = await checkCategory(category);
+  if (category !== undefined) {
+    book.category = await checkCategory(category);
+    book.categorySource = book.category ? 'manual' : undefined;
+  }
   await book.save();
   await book.populate('category', 'name slug');
   res.json({ book: present(book, req.user) });

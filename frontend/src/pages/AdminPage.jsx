@@ -3,7 +3,7 @@ import { BookOpen, Crown, Database, Headphones, Search, Shield, Trash2, Users } 
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
-import { useAdminStats, useAdminUsers, useBooks } from '../api/queries.js';
+import { useAdminStats, useAdminUsers, useBooks, useCategories } from '../api/queries.js';
 import BookCover from '../components/BookCover.jsx';
 import { ErrorMessage, Spinner } from '../components/Feedback.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -218,7 +218,21 @@ function BooksTab() {
   const q = useDebounced(query.trim(), 300);
   const books = useBooks({ q, sort: 'recent', limit: 50 });
   const list = books.data?.pages.flatMap((p) => p.books) ?? [];
+  const { data: categories } = useCategories();
   const [actionError, setActionError] = useState(null);
+
+  // Files one book under a category straight from the list (counts as chosen by a person).
+  const setCategory = async (book, categoryId) => {
+    setActionError(null);
+    try {
+      await api('/categories/books', { method: 'PUT', body: { assignments: [{ bookId: book.id, categoryId: categoryId || null }] } });
+      queryClient.invalidateQueries({ queryKey: ['books'] });
+      queryClient.invalidateQueries({ queryKey: ['book'] });
+      queryClient.invalidateQueries({ queryKey: ['categories'] });
+    } catch (err) {
+      setActionError(err);
+    }
+  };
 
   const remove = async (book) => {
     if (!window.confirm(`Delete "${book.title}" for everyone? This can't be undone.`)) return;
@@ -248,6 +262,7 @@ function BooksTab() {
               <tr>
                 <th>Book</th>
                 <th>Uploaded by</th>
+                {categories?.length > 0 && <th>Category</th>}
                 <th>Format</th>
                 <th className="num">Size</th>
                 <th>Added</th>
@@ -267,6 +282,25 @@ function BooksTab() {
                     </Link>
                   </td>
                   <td className="small">{book.uploadedBy?.name || '—'}</td>
+                  {categories?.length > 0 && (
+                    <td>
+                      <select
+                        className="role-select"
+                        value={book.category?.id ?? ''}
+                        onChange={(e) => setCategory(book, e.target.value)}
+                        aria-label={`Category of ${book.title}`}
+                        title={book.categorySource === 'auto' ? 'Picked automatically from the book' : undefined}
+                      >
+                        <option value="">None</option>
+                        {categories.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                            {book.category?.id === c.id && book.categorySource === 'auto' ? ' (auto)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                  )}
                   <td>
                     <span className="badge">{FORMAT_LABELS[book.format]}</span>
                     {book.hasAudio && (
