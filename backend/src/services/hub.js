@@ -124,7 +124,8 @@ export function applyHubPayment(payment, remote) {
     if (remote.receipt) payment.receipt = remote.receipt;
     payment.resultCode = 0;
     payment.resultDesc = remote.message;
-  } else if (remote.status === 'failed' && payment.status === 'pending') {
+  } else if (remote.status === 'failed' && ['pending', 'disputed'].includes(payment.status)) {
+    // Failed after a dispute too: the Hub checked it and the money didn't (or no longer) count.
     payment.status = 'failed';
     payment.resultCode = remote.resultCode ?? undefined;
     payment.resultDesc = remote.message;

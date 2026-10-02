@@ -4,6 +4,7 @@ import { createApp } from './app.js';
 import { hubEnabled, hubStatus } from './services/hub.js';
 import { mpesaEnabled } from './services/mpesa.js';
 import { markInterruptedJobs } from './services/narration.js';
+import { ensureUnlockIndex } from './services/premium.js';
 import { seedClassicQuotes } from './services/quotes.js';
 import { hasSuperAdmin, syncConfiguredRoles } from './services/roles.js';
 
@@ -30,6 +31,7 @@ async function main() {
   const promoted = await syncConfiguredRoles();
   if (promoted) console.log(`Made ${promoted} account(s) from SUPER_ADMIN_EMAILS super admins`);
   if (!(await hasSuperAdmin())) console.log('No super admin yet: set SUPER_ADMIN_EMAILS so someone can manage roles and site settings');
+  await ensureUnlockIndex().catch((err) => console.error(`Could not set up the one-payment-per-book rule: ${err.message}`));
   const quotes = await seedClassicQuotes();
   if (quotes) console.log(`Added ${quotes} classic book quotes (manage them in Admin → Quotes)`);
   const app = createApp();

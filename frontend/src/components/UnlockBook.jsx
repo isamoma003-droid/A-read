@@ -70,8 +70,8 @@ export default function UnlockBook({ book, price: priceOverride }) {
         id={paymentId}
         onRetry={() => setPaymentId(null)}
         onClose={() => setPaymentId(null)}
-        // Answered either way: a reload shows the book (paid) or the form again.
-        onSettled={() => rememberPayment(user?.id, book.id, null)}
+        // Failed: a reload shows the form again. A disputed payment stays on screen (the money moved).
+        onSettled={(payment) => payment.status === 'failed' && rememberPayment(user?.id, book.id, null)}
         onPaid={onPaid}
         paidTitle="Book unlocked"
         paidText="Every chapter is open now, on all your devices."

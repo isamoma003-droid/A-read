@@ -174,6 +174,11 @@ router.post('/stk', stkLimiter, optionalAuth, validate(stkSchema), async (req, r
     if (!book) throw notFound('Book not found');
     if (!isPremium(book)) throw badRequest('This book is free to read');
     if (!(await lockedSectionsFor(book, req.user)).size) throw conflict('You have already unlocked this book');
+    // M-Pesa reported a different amount for an earlier payment: the money moved, so don't ask again
+    // while it's checked (the Hub settles it as paid or failed).
+    if (await Payment.exists({ user: req.user._id, book: book._id, status: 'disputed' })) {
+      throw conflict("We're checking your earlier payment for this book (M-Pesa reported a different amount), so there's no need to pay again.");
+    }
     // A prompt for this book may still be open (the reader reloaded, or M-Pesa's answer is late):
     // pick that payment up again instead of charging twice.
     const waiting = await resumableBookPayment(req.user, book);
@@ -190,24 +195,28 @@ router.post('/stk', stkLimiter, optionalAuth, validate(stkSchema), async (req, r
 
   // The purpose comes from the promotion an admin set up, never from the browser.
   const promotion = promotionId && !book ? await Promotion.findById(promotionId).select('purpose') : null;
+  const fields = {
+    user: req.user?._id,
+    promotion: promotion?._id,
+    book: book?._id,
+    purpose: book ? 'book' : promotion?.purpose || 'donation',
+    phone,
+    amount,
+    provider: viaHub ? 'hub' : 'daraja',
+  };
   let payment;
-  try {
-    payment = await Payment.create({
-      user: req.user?._id,
-      promotion: promotion?._id,
-      book: book?._id,
-      purpose: book ? 'book' : promotion?.purpose || 'donation',
-      phone,
-      amount,
-      provider: viaHub ? 'hub' : 'daraja',
-    });
-  } catch (err) {
-    // Two unlock requests at the same moment (two tabs or devices): only one payment may be
-    // waiting per reader and book, so the second one follows the first.
-    if (err.code !== 11000 || !book) throw err;
-    const first = await Payment.findOne({ user: req.user._id, book: book._id, status: 'pending' });
-    if (!first) throw err;
-    return res.json({ payment: publicPayment(first), resumed: true });
+  for (let attempt = 1; !payment; attempt++) {
+    try {
+      payment = await Payment.create(fields);
+    } catch (err) {
+      // Two unlock requests at the same moment (two tabs or devices): only one payment may be
+      // waiting per reader and book, so the second one follows the first. If that one has already
+      // ended (its prompt was refused), try once more.
+      if (err.code !== 11000 || !book) throw err;
+      const first = await Payment.findOne({ user: req.user._id, book: book._id, status: 'pending' });
+      if (first) return res.json({ payment: publicPayment(first), resumed: true });
+      if (attempt >= 2) throw new HttpError(429, 'A payment request for this book was just sent. Check your phone, or try again in a minute.');
+    }
   }
 
   if (viaHub) await startThroughHub(payment, { promotion, book });
@@ -315,15 +324,10 @@ router.get('/setup', requireAuth, requireAdmin, async (req, res) => {
 // One that has had no answer for GIVE_UP_MS counts as failed (a late success still settles it), so
 // the reader can try again.
 async function resumableBookPayment(user, book) {
-  const waiting = await Payment.findOne({ user: user._id, book: book._id, status: 'pending' }).sort({ createdAt: -1 });
+  let waiting = await Payment.findOne({ user: user._id, book: book._id, status: 'pending' }).sort({ createdAt: -1 });
   if (!waiting) return null;
-  if (waiting.provider === 'hub') await refreshFromHub(waiting);
-  else await refreshFromDaraja(waiting);
-  if (waiting.status === 'pending' && Date.now() - waiting.createdAt.getTime() > GIVE_UP_MS) {
-    waiting.status = 'failed';
-    waiting.resultDesc = 'No answer from M-Pesa';
-    await waiting.save();
-  }
+  waiting = await (waiting.provider === 'hub' ? refreshFromHub(waiting) : refreshFromDaraja(waiting));
+  if (waiting.status === 'pending' && Date.now() - waiting.createdAt.getTime() > GIVE_UP_MS) waiting = await giveUp(waiting);
   return ['pending', 'paid'].includes(waiting.status) ? waiting : null;
 }
 
@@ -331,7 +335,7 @@ const due = (payment, everyMs) => !payment.checkedAt || Date.now() - payment.che
 
 // Hub payments: ask the Hub (it checks with Safaricom itself when the callback is late).
 async function refreshFromHub(payment) {
-  if (!payment.hubPaymentId || !hubEnabled() || !due(payment, HUB_CHECK_EVERY_MS)) return;
+  if (!payment.hubPaymentId || !hubEnabled() || !due(payment, HUB_CHECK_EVERY_MS)) return payment;
   payment.checkedAt = new Date();
   try {
     const { payment: remote } = await hub().getPayment(payment.hubPaymentId);
@@ -340,12 +344,21 @@ async function refreshFromHub(payment) {
     console.warn(`ISA Tech Hub status check for ${payment.id} failed: ${err.message}`);
   }
   await payment.save();
+  return payment;
+}
+
+// Marks a payment that never got an answer as failed, unless M-Pesa settled it in the meantime (a
+// webhook or callback can land while we were asking): only a payment still pending in the
+// database changes. Returns the payment as it is now.
+async function giveUp(payment) {
+  await Payment.updateOne({ _id: payment._id, status: 'pending' }, { $set: { status: 'failed', resultDesc: 'No answer from M-Pesa' } });
+  return Payment.findById(payment._id);
 }
 
 // Direct payments: if Safaricom's callback is slow or lost, ask Daraja directly.
 async function refreshFromDaraja(payment) {
   const age = Date.now() - payment.createdAt.getTime();
-  if (!payment.checkoutRequestId || age <= QUERY_AFTER_MS || !due(payment, QUERY_EVERY_MS) || !mpesaEnabled()) return;
+  if (!payment.checkoutRequestId || age <= QUERY_AFTER_MS || !due(payment, QUERY_EVERY_MS) || !mpesaEnabled()) return payment;
   payment.checkedAt = new Date();
   try {
     const result = await stkQuery(payment.checkoutRequestId);
@@ -353,21 +366,15 @@ async function refreshFromDaraja(payment) {
   } catch (err) {
     console.warn(`M-Pesa status check for ${payment.id} failed: ${err.message}`);
   }
-  if (payment.status === 'pending' && age > GIVE_UP_MS) {
-    payment.status = 'failed';
-    payment.resultDesc = 'No answer from M-Pesa';
-  }
   await payment.save();
+  return payment.status === 'pending' && age > GIVE_UP_MS ? giveUp(payment) : payment;
 }
 
 // The payer's page polls this.
 router.get('/:id', async (req, res) => {
-  const payment = await Payment.findById(req.params.id);
+  let payment = await Payment.findById(req.params.id);
   if (!payment) throw notFound('Payment not found');
-  if (payment.status === 'pending') {
-    if (payment.provider === 'hub') await refreshFromHub(payment);
-    else await refreshFromDaraja(payment);
-  }
+  if (payment.status === 'pending') payment = await (payment.provider === 'hub' ? refreshFromHub(payment) : refreshFromDaraja(payment));
   res.json({ payment: publicPayment(payment) });
 });
 

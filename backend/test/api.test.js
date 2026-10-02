@@ -1017,10 +1017,14 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     // Erin pays the book's price by M-Pesa.
     const calls = [];
     let pushes = 0;
+    let onQuery = async () => {};
     setMpesaTransport(async (url, { body }) => {
       calls.push({ url, body });
       if (url.includes('/oauth/')) return { status: 200, json: { access_token: 'token', expires_in: '3599' } };
-      if (url.includes('/stkpushquery/')) return { status: 500, json: { errorCode: '500.001.1001', errorMessage: 'The transaction is being processed' } };
+      if (url.includes('/stkpushquery/')) {
+        await onQuery(body);
+        return { status: 500, json: { errorCode: '500.001.1001', errorMessage: 'The transaction is being processed' } };
+      }
       pushes++;
       const id = pushes === 1 ? 'ws_CO_book' : `ws_CO_book_${pushes}`;
       return { status: 200, json: { ResponseCode: '0', CheckoutRequestID: id, MerchantRequestID: 'm_book' } };
@@ -1062,6 +1066,39 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
       assert.equal(res.status, 201, JSON.stringify(res.body));
       assert.notEqual(res.body.payment.id, stuck);
       assert.equal((await Payment.findById(stuck)).status, 'failed');
+
+      // M-Pesa's "paid" landing while we decide to give up on a slow payment is never overwritten.
+      const late = res.body.payment.id;
+      await Payment.collection.updateOne({ _id: new mongoose.Types.ObjectId(late) }, { $set: { createdAt: new Date(Date.now() - 6 * 60_000) } });
+      onQuery = () => Payment.collection.updateOne({ _id: new mongoose.Types.ObjectId(late) }, { $set: { status: 'paid', receipt: 'TJKLATE999' } });
+      res = await api('/payments/stk', { token: fay, method: 'POST', body: { phone: '0712000104', bookId: book.id } });
+      assert.equal(res.status, 409, JSON.stringify(res.body));
+      assert.equal((await Payment.findById(late)).status, 'paid');
+      assert.equal((await api(`/books/${book.id}/sections/2`, { token: fay })).status, 200, 'Fay paid, so the book is open');
+      onQuery = async () => {};
+
+      // While M-Pesa's amount for an earlier payment is being checked, no new prompt is sent.
+      const gus = (await api('/auth/register', { method: 'POST', body: { name: 'Gus', email: 'gus@example.com', password: 'password4' } })).body.token;
+      const gusId = (await api('/auth/me', { token: gus })).body.user.id;
+      await Payment.create({ user: gusId, book: book.id, purpose: 'book', phone: '254712000105', amount: 200, status: 'disputed', provider: 'hub' });
+      res = await api('/payments/stk', { token: gus, method: 'POST', body: { phone: '0712000105', bookId: book.id } });
+      assert.equal(res.status, 409);
+      assert.match(res.body.error, /no need to pay again/);
+
+      // A database with several waiting unlock payments from before the one-at-a-time rule keeps the
+      // newest waiting and gets the rule.
+      const { ensureUnlockIndex } = await import('../src/services/premium.js');
+      await Payment.collection.dropIndex('one_pending_unlock');
+      const legacy = [6, 3].map((minutes) => ({
+        user: new mongoose.Types.ObjectId(gusId), book: new mongoose.Types.ObjectId(freeBook.id), purpose: 'book', phone: '254712000106',
+        amount: 50, status: 'pending', provider: 'daraja', createdAt: new Date(Date.now() - minutes * 60_000),
+      }));
+      const { insertedIds } = await Payment.collection.insertMany(legacy);
+      assert.equal(await ensureUnlockIndex(), 1);
+      assert.equal((await Payment.findById(insertedIds[0])).status, 'failed', 'the older one');
+      assert.equal((await Payment.findById(insertedIds[1])).status, 'pending', 'the newest keeps waiting');
+      assert.ok((await Payment.collection.indexes()).some((i) => i.name === 'one_pending_unlock'));
+      await Payment.deleteMany({ _id: { $in: Object.values(insertedIds) } });
       assert.equal((await api(`/books/${book.id}/sections/2`, { token: erin })).status, 402, 'locked until M-Pesa confirms');
       await api('/payments/mpesa/callback/callback-secret', {
         method: 'POST',
@@ -1095,13 +1132,13 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
 
     // Admins see what each premium book has sold.
     res = await api('/admin/premium', { token: alice });
-    assert.deepEqual(res.body.books.find((b) => b.id === book.id).sales, { amount: 200, count: 1 });
+    assert.deepEqual(res.body.books.find((b) => b.id === book.id).sales, { amount: 400, count: 2 }, 'Erin and Fay');
     assert.equal((await api('/admin/premium', { token: erin })).status, 403);
     res = await api('/payments?purpose=book', { token: alice });
     const erinsPayment = res.body.payments.find((p) => p.id === payment.id);
     assert.deepEqual([erinsPayment.book.title, erinsPayment.status], ['Paid Book', 'paid']);
     assert.ok(res.body.payments.every((p) => p.purpose === 'book'));
-    assert.deepEqual(res.body.totals.byPurpose.book, { amount: 200, count: 1 });
+    assert.deepEqual(res.body.totals.byPurpose.book, { amount: 400, count: 2 });
     assert.equal((await api('/admin/stats', { token: alice })).body.premium, 1);
 
     // Turning premium off frees the book for everyone and keeps the settings for later.

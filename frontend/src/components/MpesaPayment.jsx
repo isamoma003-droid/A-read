@@ -24,8 +24,8 @@ export function savePhone(phone) {
 }
 
 // Follows one STK Push payment until M-Pesa answers. `onPaid` runs once when it's paid, and
-// `onSettled` once when M-Pesa has answered either way. With `onClose`, the waiting, error and
-// "checking" screens get a button back to the form.
+// `onSettled` once when M-Pesa has answered either way. With `onClose`, the waiting and error
+// screens get a button back to the form (not the "checking" one: that money already moved).
 export function PaymentStatus({ id, onRetry, onPaid, onSettled, onClose, paidTitle = 'Thank you!', paidText }) {
   const { data: payment, error } = usePayment(id);
   const status = payment?.status;
@@ -83,7 +83,6 @@ export function PaymentStatus({ id, onRetry, onPaid, onSettled, onClose, paidTit
         <h2>We're checking this payment</h2>
         <p>{payment.message}</p>
         {payment.receipt && <p className="muted small">M-Pesa receipt {payment.receipt}</p>}
-        {back}
       </section>
     );
   }

@@ -26,6 +26,24 @@ export async function lockedSectionsFor(book, user) {
   return lockedFor(book, user, await purchasedBookIds(user, [book]));
 }
 
+// Only one unlock payment may wait for M-Pesa per reader and book (Payment's one_pending_unlock
+// index). A database with several from before that rule keeps the newest of each waiting and marks
+// the rest failed (a late success still settles them), then builds the index. Run at startup.
+export async function ensureUnlockIndex() {
+  const groups = await Payment.aggregate([
+    { $match: { status: 'pending', book: { $exists: true } } },
+    { $sort: { createdAt: -1, _id: -1 } },
+    { $group: { _id: { user: '$user', book: '$book' }, ids: { $push: '$_id' }, count: { $sum: 1 } } },
+    { $match: { count: { $gt: 1 } } },
+  ]);
+  const older = groups.flatMap((g) => g.ids.slice(1));
+  if (older.length) {
+    await Payment.updateMany({ _id: { $in: older }, status: 'pending' }, { $set: { status: 'failed', resultDesc: 'Replaced by a newer attempt' } });
+  }
+  await Payment.createIndexes();
+  return older.length;
+}
+
 export const lockedError = (book) =>
   new HttpError(402, 'This chapter is part of the premium edition. Unlock the book to read it.', {
     code: 'PREMIUM_LOCKED',
