@@ -4,6 +4,8 @@ import { Link, useLocation } from 'react-router-dom';
 import { useActivePromotion } from '../api/queries.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { formatKes } from '../utils/format.js';
+import CenteredDialog from './CenteredDialog.jsx';
+import { usePopupTurn } from './popupQueue.js';
 
 // Promotions closed during this page load (frequency "visit" shows again on the next one).
 const closedThisLoad = new Set();
@@ -53,11 +55,13 @@ export const supportLink = (promotion, amount) => {
 };
 
 // The card itself. Also used as the live preview in the admin form.
+export const promoTitleId = (promotion) => `promo-title-${promotion.id || 'preview'}`;
+
 export function PromotionCard({ promotion, onClose, countdown, paused, preview = false }) {
-  const titleId = `promo-title-${promotion.id || 'preview'}`;
+  const titleId = promoTitleId(promotion);
   const go = preview ? (e) => e.preventDefault() : onClose;
   return (
-    <div className={`promo-card ${preview ? 'promo-preview' : ''}`} role="dialog" aria-modal="false" aria-labelledby={titleId}>
+    <div className={`promo-card ${preview ? 'promo-preview' : ''}`}>
       <button type="button" className="icon-button promo-close" onClick={onClose} title="Close">
         <X size={18} />
         <span className="sr-only">Close</span>
@@ -92,59 +96,62 @@ export function PromotionCard({ promotion, onClose, countdown, paused, preview =
   );
 }
 
-// Shows the admin's current promotion in a corner of the page. It never covers the page or
-// takes focus, so readers can ignore it and keep browsing.
+// Shows the admin's current promotion in the centre of the screen, after its delay and once no
+// other popup is open. Readers close it with "Not now", the X, Escape or a click outside.
 export default function PromotionPopup() {
   const { user } = useAuth();
   const location = useLocation();
   const { data: promotion } = useActivePromotion(user?.id || 'guest');
-  const [shown, setShown] = useState(null);
+  const [ready, setReady] = useState(null);
+  const [closed, setClosed] = useState(null);
   const [paused, setPaused] = useState(false);
   const remaining = useRef(0);
   const onSupportPage = location.pathname === '/support';
 
-  // Wait the configured delay, then show it (unless this reader has already seen it).
+  // Wait the configured delay (unless this reader has already seen it), then queue it.
   useEffect(() => {
-    if (!promotion || onSupportPage || shown?.id === promotion.id || alreadySeen(promotion)) return undefined;
-    const timer = setTimeout(() => {
-      markSeen(promotion);
-      remaining.current = promotion.autoCloseSeconds * 1000;
-      setShown(promotion);
-    }, promotion.delaySeconds * 1000);
+    if (!promotion || onSupportPage || ready?.id === promotion.id || alreadySeen(promotion)) return undefined;
+    const timer = setTimeout(() => setReady(promotion), promotion.delaySeconds * 1000);
     return () => clearTimeout(timer);
-  }, [promotion, onSupportPage, shown]);
+  }, [promotion, onSupportPage, ready]);
 
-  // Hide it if the admin pauses or ends it, or the reader opens the support page.
-  const visible = shown && promotion?.id === shown.id && !onSupportPage;
+  // Hidden if the admin pauses or ends it, or the reader opens the support page.
+  const wanted = Boolean(ready && promotion?.id === ready.id && closed !== ready.id && !onSupportPage);
+  const visible = usePopupTurn('promotion', wanted) && wanted;
+  const close = () => setClosed(ready?.id);
+
+  // Counted as seen once it's actually on screen.
+  useEffect(() => {
+    if (!visible) return;
+    markSeen(ready);
+    remaining.current = ready.autoCloseSeconds * 1000;
+  }, [visible, ready]);
 
   // Auto-close, paused while the pointer or keyboard focus is on the card.
   useEffect(() => {
-    if (!visible || !shown.autoCloseSeconds || paused) return undefined;
+    if (!visible || !ready.autoCloseSeconds || paused) return undefined;
     const started = Date.now();
-    const timer = setTimeout(() => setShown(null), remaining.current);
+    const timer = setTimeout(() => setClosed(ready.id), remaining.current);
     return () => {
       clearTimeout(timer);
       remaining.current = Math.max(0, remaining.current - (Date.now() - started));
     };
-  }, [visible, shown, paused]);
-
-  useEffect(() => {
-    if (!visible) return undefined;
-    const onKey = (e) => e.key === 'Escape' && setShown(null);
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [visible]);
+  }, [visible, ready, paused]);
 
   if (!visible) return null;
   return (
-    <div
+    <CenteredDialog
+      open
+      onClose={close}
+      labelledBy={promoTitleId(ready)}
       className="promo-popup"
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
-      onFocus={() => setPaused(true)}
+      // The dialog itself takes focus when it opens; only focusing its buttons pauses the timer.
+      onFocus={(event) => event.target !== event.currentTarget && setPaused(true)}
       onBlur={() => setPaused(false)}
     >
-      <PromotionCard promotion={shown} onClose={() => setShown(null)} countdown={shown.autoCloseSeconds} paused={paused} />
-    </div>
+      <PromotionCard promotion={ready} onClose={close} countdown={ready.autoCloseSeconds} paused={paused} />
+    </CenteredDialog>
   );
 }

@@ -5,6 +5,20 @@ import { clearOfflineBooks } from '../offline/store.js';
 
 const AuthContext = createContext(null);
 const USER_KEY = 'a-read-user';
+const OFFLINE_OWNER_KEY = 'a-read-offline-owner';
+
+// Books kept offline belong to one account. When a different account signs in on this device,
+// they're forgotten: they can include the previous reader's paid chapters and private file links.
+function claimOfflineBooks(user) {
+  if (!user?.id) return;
+  try {
+    const owner = localStorage.getItem(OFFLINE_OWNER_KEY);
+    if (owner && owner !== user.id) clearOfflineBooks();
+    localStorage.setItem(OFFLINE_OWNER_KEY, user.id);
+  } catch {
+    // Storage blocked: nothing is kept offline either.
+  }
+}
 
 // The last signed-in user, so the app still knows who you are when it opens offline.
 function storedUser() {
@@ -30,6 +44,7 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(() => Boolean(tokenStore.get()) && !storedUser());
   const setUser = useCallback((next) => {
     storeUser(next);
+    claimOfflineBooks(next);
     setUserState(next);
   }, []);
 

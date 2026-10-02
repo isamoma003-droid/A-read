@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BookmarkPlus, Trash2, X } from 'lucide-react';
+import { BookmarkPlus, Lock, Trash2, X } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { keys, useBookmarks } from '../api/queries.js';
@@ -40,7 +40,7 @@ function Contents({ book, sections, currentSection, onJump }) {
       {entries.map((entry, i) => (
         <li key={`${entry.sectionIndex}-${i}`} style={{ paddingLeft: `${entry.depth * 14}px` }}>
           <button type="button" className={`toc-link ${i === activeEntry ? 'active' : ''}`} onClick={() => onJump({ sectionIndex: entry.sectionIndex, sentenceIndex: 0 })}>
-            {entry.title}
+            {entry.title} {sections[entry.sectionIndex]?.locked && <Lock size={13} className="toc-lock" aria-label="Locked" />}
           </button>
         </li>
       ))}

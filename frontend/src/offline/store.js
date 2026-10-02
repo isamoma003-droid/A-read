@@ -94,10 +94,17 @@ async function saveBook(book, { includeFile, includeAudiobook, onProgress } = {}
         wordCount: s.wordCount,
         sentenceCount: s.sentenceCount,
         narrationDuration: s.narration?.duration ?? null,
+        locked: Boolean(s.locked),
       })),
     },
   };
-  for (const section of sections) jsonUrls[apiUrl(`/books/${book.id}/sections/${section.index}`)] = { section };
+  // Locked premium chapters come without text: keep nothing for them (and drop any copy saved
+  // before the book went premium).
+  for (const section of sections) {
+    const url = apiUrl(`/books/${book.id}/sections/${section.index}`);
+    if (section.locked) await cache.delete(url);
+    else jsonUrls[url] = { section };
+  }
 
   const apiGets = [`/progress/${book.id}`, `/books/${book.id}/bookmarks`, `/books/${book.id}/narration`, '/auth/me'].map(apiUrl);
   const bookFile = full.file?.parts?.length ? full.file.parts.map((p) => p.url) : full.file?.url ? [full.file.url] : [];
@@ -165,6 +172,7 @@ async function saveBook(book, { includeFile, includeAudiobook, onProgress } = {}
       hasAudiobook: Boolean(includeAudiobook && full.audiobook?.url),
       hasFile: fileIncluded && bookFile.length > 0,
       bookUpdatedAt: full.updatedAt,
+      unlocked: full.unlocked !== false,
       bytes,
       urls,
       savedAt: new Date().toISOString(),
@@ -184,16 +192,29 @@ const inFlight = new Map();
 export function keepBookOffline(book, { audiobook = false } = {}) {
   if (!offlineSupported || !navigator.onLine || !book?.id) return Promise.resolve();
   const saved = index[book.id];
-  const upToDate = saved && saved.bookUpdatedAt === book.updatedAt && (!audiobook || saved.hasAudiobook || !book.audiobook);
+  const upToDate =
+    saved &&
+    saved.bookUpdatedAt === book.updatedAt &&
+    // Paying for a premium book doesn't change the book itself, but opens chapters to save.
+    (saved.unlocked ?? true) === (book.unlocked !== false) &&
+    (!audiobook || saved.hasAudiobook || !book.audiobook);
   if (upToDate) {
     writeIndex({ ...index, [book.id]: { ...saved, openedAt: new Date().toISOString() } });
     return Promise.resolve();
   }
-  if (inFlight.has(book.id)) return inFlight.get(book.id);
-  const job = saveBook(book, { includeAudiobook: audiobook || Boolean(saved?.hasAudiobook) })
+  const running = inFlight.get(book.id);
+  const unlocked = book.unlocked !== false;
+  if (running) {
+    // A save of the same version is already going. If the book changed meanwhile (edited, or the
+    // reader just paid for it), check again once that save is done.
+    if (running.updatedAt === book.updatedAt && running.unlocked === unlocked && (!audiobook || running.audiobook)) return running.job;
+    return running.job.then(() => keepBookOffline(book, { audiobook }));
+  }
+  const includeAudiobook = audiobook || Boolean(saved?.hasAudiobook);
+  const job = saveBook(book, { includeAudiobook })
     .catch(() => {})
     .finally(() => inFlight.delete(book.id));
-  inFlight.set(book.id, job);
+  inFlight.set(book.id, { job, updatedAt: book.updatedAt, unlocked, audiobook: includeAudiobook });
   return job;
 }
 

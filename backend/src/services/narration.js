@@ -5,7 +5,7 @@ import { Book } from '../models/Book.js';
 import { Section, unpackParagraphs } from '../models/Section.js';
 import { badRequest, conflict } from '../utils/httpError.js';
 import { applyTimepoints, buildSsmlChunks, fillMissingMarks } from './ssml.js';
-import { bookFolder, errorMessage, uploadBuffer } from './storage.js';
+import { bookFolder, destroyAsset, errorMessage, privateSuffix, uploadBuffer } from './storage.js';
 import { cloudinary } from '../config/cloudinary.js';
 
 // Only these voice families accept SSML <mark> tags (Chirp and Journey voices do not).
@@ -129,12 +129,15 @@ async function runJob(bookId, voice, job) {
 
       const result = await synthesizeSection(unpackParagraphs(section.sentences, section.paragraphStarts), voice);
       if (job.cancelled) break;
+      // A fresh unguessable name, so a premium book's locked chapters can't be fetched by URL.
       const asset = await uploadBuffer(result.audio, {
-        publicId: `${bookFolder(bookId)}/narration/section-${String(section.index).padStart(4, '0')}`,
+        publicId: `${bookFolder(bookId)}/narration/section-${String(section.index).padStart(4, '0')}-${privateSuffix()}`,
         resourceType: 'video',
       });
+      const previous = section.narration;
       section.narration = { url: asset.url, publicId: asset.publicId, voice, duration: result.duration, marks: result.marks };
       await section.save();
+      if (previous?.publicId) await destroyAsset({ publicId: previous.publicId, resourceType: 'video' });
       await Book.updateOne({ _id: bookId }, { $inc: { 'narration.completedSections': 1 } });
     }
 

@@ -18,6 +18,7 @@ export default function TextView({
   onNext,
   emptyHint,
   style,
+  lockedContent,
 }) {
   const root = useRef(null);
 
@@ -76,7 +77,9 @@ export default function TextView({
         {section?.title && !/^Page \d+$/.test(section.title) && <h2>{section.title}</h2>}
       </header>
 
-      {loading && !section ? (
+      {lockedContent ? (
+        lockedContent
+      ) : loading && !section ? (
         <div className="center-block">
           <Spinner label="Loading…" />
         </div>

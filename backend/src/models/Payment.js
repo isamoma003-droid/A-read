@@ -2,13 +2,14 @@ import mongoose from '../config/mongoose.js';
 
 const { Schema } = mongoose;
 
-// One M-Pesa payment attempt. `purpose` says what it was for: "donation" today; other values
-// (e.g. "premium") can later unlock features for `user` once `status` is "paid".
+// One M-Pesa payment attempt. `purpose` says what it was for: "donation" by default, a popup's
+// purpose (e.g. "premium"), or "book" when it unlocks the premium `book` for `user` once paid.
 // `provider` says who talked to Safaricom: ISA Tech Hub ("hub") or A-Read itself ("daraja").
 const paymentSchema = new Schema(
   {
     user: { type: Schema.Types.ObjectId, ref: 'User', index: true },
     promotion: { type: Schema.Types.ObjectId, ref: 'Promotion', index: true },
+    book: { type: Schema.Types.ObjectId, ref: 'Book' },
     purpose: { type: String, trim: true, maxlength: 40, default: 'donation' },
     phone: { type: String, required: true },
     amount: { type: Number, required: true, min: 1 },
@@ -30,6 +31,12 @@ const paymentSchema = new Schema(
 );
 
 paymentSchema.index({ user: 1, purpose: 1, status: 1 });
+paymentSchema.index({ book: 1, status: 1, user: 1 });
+// At most one unlock payment waiting for M-Pesa per reader and book (no double charge).
+paymentSchema.index(
+  { user: 1, book: 1 },
+  { unique: true, partialFilterExpression: { status: 'pending', book: { $exists: true } }, name: 'one_pending_unlock' },
+);
 
 // For unlocking paid features later: has this reader paid at least `minAmount` for `purpose`?
 paymentSchema.statics.hasPaid = async function hasPaid(userId, purpose, minAmount = 1) {

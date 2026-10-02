@@ -1,6 +1,6 @@
-import { BookOpen, Headphones } from 'lucide-react';
+import { BookOpen, Crown, Headphones } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { FORMAT_LABELS } from '../utils/format.js';
+import { FORMAT_LABELS, formatKes } from '../utils/format.js';
 import BookCover from './BookCover.jsx';
 import { ProgressBar } from './Feedback.jsx';
 
@@ -22,12 +22,19 @@ export default function BookCard({ book, percent }) {
             <span className="sr-only">Has audio</span>
           </span>
         )}
+        {book.premium && (
+          <span className="cover-flag cover-flag-premium" title={book.unlocked ? 'Premium: unlocked' : 'Premium: some chapters are locked'}>
+            <Crown size={13} aria-hidden="true" />
+            <span className="sr-only">Premium</span>
+          </span>
+        )}
       </div>
       <div className="book-card-body">
         <h3 className="book-card-title">{book.title}</h3>
         {book.author && <p className="book-card-author">{book.author}</p>}
         <div className="book-card-meta">
           <span className="badge">{FORMAT_LABELS[book.format]}</span>
+          {book.premium && !book.unlocked && <span className="badge badge-premium">{formatKes(book.premium.price)}</span>}
           {progress > 0 && <span className="muted small">{Math.round(progress)}%</span>}
         </div>
         {progress > 0 && <ProgressBar value={progress} label={`${Math.round(progress)}% read`} />}

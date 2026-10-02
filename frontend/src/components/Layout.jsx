@@ -1,10 +1,14 @@
-import { BookOpen, Heart, ListChecks, LogOut, Moon, Shield, Sun, Upload } from 'lucide-react';
+import { useState } from 'react';
+import { BookOpen, Heart, ListChecks, LogOut, Megaphone, Moon, Shield, Sun, Upload, X } from 'lucide-react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
+import { useSystemConfig } from '../api/queries.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
+import { isAdmin } from '../utils/roles.js';
 import InstallButton from './InstallButton.jsx';
 import OfflineBanner from './OfflineBanner.jsx';
 import PromotionPopup from './PromotionPopup.jsx';
+import QuotePopup from './QuotePopup.jsx';
 
 const THEME_ORDER = ['light', 'sepia', 'dark'];
 
@@ -19,9 +23,43 @@ export function ThemeToggle() {
   );
 }
 
+const DISMISSED_KEY = 'a-read-announcement-dismissed';
+
+// The super admin's site-wide notice. A reader can hide it until the text changes.
+function Announcement({ text }) {
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(DISMISSED_KEY);
+    } catch {
+      return null;
+    }
+  });
+  if (!text || dismissed === text) return null;
+  const dismiss = () => {
+    try {
+      localStorage.setItem(DISMISSED_KEY, text);
+    } catch {
+      // ignore
+    }
+    setDismissed(text);
+  };
+  return (
+    <div className="announcement" role="status">
+      <Megaphone size={16} aria-hidden="true" />
+      <span>{text}</span>
+      <button type="button" className="icon-button" onClick={dismiss} title="Hide this notice">
+        <X size={16} />
+        <span className="sr-only">Hide this notice</span>
+      </button>
+    </div>
+  );
+}
+
 export default function Layout() {
   const { user, logout } = useAuth();
   const location = useLocation();
+  const { data: system } = useSystemConfig();
+  const canUpload = system?.uploads !== 'admins' || isAdmin(user);
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -44,14 +82,16 @@ export default function Layout() {
                 <NavLink to="/required" title="Required reading">
                   <ListChecks size={16} aria-hidden="true" /> <span className="hide-mobile">Required</span>
                 </NavLink>
-                {user.role === 'admin' && (
+                {isAdmin(user) && (
                   <NavLink to="/admin" title="Admin panel">
                     <Shield size={16} aria-hidden="true" /> <span className="hide-mobile">Admin</span>
                   </NavLink>
                 )}
-                <NavLink to="/upload" className="button button-primary button-small">
-                  <Upload size={16} aria-hidden="true" /> <span className="hide-mobile">Upload</span>
-                </NavLink>
+                {canUpload && (
+                  <NavLink to="/upload" className="button button-primary button-small">
+                    <Upload size={16} aria-hidden="true" /> <span className="hide-mobile">Upload</span>
+                  </NavLink>
+                )}
                 <InstallButton />
                 <ThemeToggle />
                 <span className="user-chip" title={`${user.name} · ${user.email}`}>
@@ -78,9 +118,11 @@ export default function Layout() {
         </div>
       </header>
       <OfflineBanner />
+      <Announcement text={system?.announcement} />
       <main className="page">
         <Outlet />
       </main>
+      <QuotePopup />
       <PromotionPopup />
     </div>
   );

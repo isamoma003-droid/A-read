@@ -3,6 +3,7 @@
 // Cloudinary calls are stubbed, so no Cloudinary account is needed.
 process.env.NODE_ENV ||= 'test'; // must be set before src/ modules load (they're imported in before())
 process.env.ADMIN_EMAILS = 'alice@example.com';
+process.env.SUPER_ADMIN_EMAILS = 'sam@example.com,sue@example.com';
 process.env.CLOUDINARY_MAX_FILE_MB = '0.004'; // ~4 KB parts so the chunking path is exercised
 process.env.FRONTEND_URL = 'https://a-read.example';
 process.env.GOOGLE_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
@@ -30,6 +31,8 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
   let base;
   const uploads = [];
   const destroyed = [];
+  const renamed = [];
+  let renameFails = () => false;
 
   before(async () => {
     const { cloudinary } = await import('../src/config/cloudinary.js');
@@ -52,6 +55,11 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
       },
     });
     cloudinary.uploader.destroy = async (publicId) => destroyed.push(publicId);
+    cloudinary.uploader.rename = async (from, to, options) => {
+      if (renameFails(from, to)) throw { error: { message: `Server error renaming ${from}` } };
+      renamed.push({ from, to });
+      return fakeResult({ public_id: to, resource_type: options.resource_type });
+    };
     cloudinary.api.delete_resources_by_prefix = async (prefix) => destroyed.push(prefix);
     cloudinary.api.delete_folder = async () => {};
 
@@ -232,11 +240,10 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal(bobUser.books, 2);
     const me = users.find((u) => u.email === 'alice@example.com');
     assert.equal(me.role, 'admin');
-    assert.equal((await api(`/admin/users/${me.id}`, { token: alice, method: 'PATCH', body: { role: 'user' } })).status, 400);
-    let res = await api(`/admin/users/${bobUser.id}`, { token: alice, method: 'PATCH', body: { role: 'admin' } });
-    assert.equal(res.body.user.role, 'admin');
-    res = await api(`/admin/users/${bobUser.id}`, { token: alice, method: 'PATCH', body: { role: 'user' } });
-    assert.equal(res.body.user.role, 'user');
+    // Only super admins change roles (see the super admin test).
+    const res = await api(`/admin/users/${bobUser.id}`, { token: alice, method: 'PATCH', body: { role: 'admin' } });
+    assert.equal(res.status, 403);
+    assert.match(res.body.error, /super admin/);
   });
 
   test('guests can browse the catalogue but not read', async () => {
@@ -417,7 +424,7 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
       const section = (await api(`/books/${txtBook.id}/sections/0`, { token: bob })).body.section;
       assert.deepEqual(section.narration.marks, [0, 0.4]);
       assert.equal(section.narration.duration, 1);
-      assert.match(section.narration.url, /narration\/section-0000$/);
+      assert.match(section.narration.url, /narration\/section-0000-[0-9a-f]{24}$/, 'narration audio gets an unguessable name');
       res = await api('/books?audio=narration', { token: bob });
       assert.equal(res.body.total, 1);
 
@@ -861,5 +868,553 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
 
     // Without the Hub settings the webhook route is closed.
     assert.equal((await fetch(`${base}/payments/hub-webhook`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 404);
+  });
+
+  let freeBook;
+
+  test('admins manage categories and books are filed under them', async () => {
+    const create = (body, token = alice) => api('/categories', { token, method: 'POST', body });
+    assert.equal((await create({ name: 'Fiction' }, carol)).status, 403);
+    assert.equal((await create({ name: 'Fiction' }, null)).status, 401);
+    let res = await create({ name: 'Science & Nature', description: 'How the world works' });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const science = res.body.category;
+    assert.equal(science.slug, 'science-nature');
+    assert.equal(science.books, 0);
+    const fiction = (await create({ name: 'Fiction' })).body.category;
+    res = await create({ name: ' fiction ' });
+    assert.equal(res.status, 409);
+    assert.match(res.body.error, /already a category/);
+    assert.equal((await create({ name: '!!!' })).status, 400);
+
+    // Uploaders pick a category from the list.
+    res = await api('/books', { token: carol, method: 'POST', form: bookForm('story.txt', 'CHAPTER 1\n\nOnce upon a time.', { category: fiction.id }) });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const story = res.body.book;
+    assert.deepEqual(story.category, { id: fiction.id, name: 'Fiction', slug: 'fiction' });
+    res = await api('/books', { token: carol, method: 'POST', form: bookForm('facts.txt', 'Water boils.', { category: '0123456789abcdef01234567' }) });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /no longer exists/);
+    res = await api('/books', { token: carol, method: 'POST', form: bookForm('facts.txt', 'Water boils at 100 degrees.') });
+    freeBook = res.body.book;
+    assert.equal(freeBook.category, null);
+    res = await api(`/books/${freeBook.id}`, { token: carol, method: 'PATCH', body: { category: science.id } });
+    assert.equal(res.body.book.category.slug, 'science-nature');
+
+    // Anyone can browse by category.
+    res = await api('/books?category=science-nature');
+    assert.deepEqual(res.body.books.map((b) => b.id), [freeBook.id]);
+    assert.equal(res.body.books[0].category.name, 'Science & Nature');
+    assert.equal((await api('/books?category=nope')).body.total, 0);
+    res = await api('/categories');
+    assert.deepEqual(res.body.categories.map((c) => [c.name, c.books]), [['Fiction', 1], ['Science & Nature', 1]]);
+
+    // Renaming changes the link but keeps the books.
+    res = await api(`/categories/${science.id}`, { token: alice, method: 'PATCH', body: { name: 'Science' } });
+    assert.equal(res.body.category.slug, 'science');
+    assert.equal(res.body.category.books, 1);
+    assert.equal((await api('/books?category=science')).body.total, 1);
+    assert.equal((await api(`/categories/${science.id}`, { token: alice, method: 'PATCH', body: { name: 'FICTION' } })).status, 409);
+
+    // A book can leave its category; deleting a category keeps its books in the library.
+    res = await api(`/books/${freeBook.id}`, { token: carol, method: 'PATCH', body: { category: null } });
+    assert.equal(res.body.book.category, null);
+    assert.equal((await api(`/categories/${fiction.id}`, { token: carol, method: 'DELETE' })).status, 403);
+    assert.equal((await api(`/categories/${fiction.id}`, { token: alice, method: 'DELETE' })).status, 204);
+    res = await api(`/books/${story.id}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.book.category, null);
+    assert.deepEqual((await api('/categories')).body.categories.map((c) => c.name), ['Science']);
+  });
+
+  test('premium books lock the chapters an admin picks until the reader pays', async () => {
+    const { Book } = await import('../src/models/Book.js');
+    const { Section } = await import('../src/models/Section.js');
+    const { setMpesaTransport } = await import('../src/services/mpesa.js');
+    const erin = (await api('/auth/register', { method: 'POST', body: { name: 'Erin', email: 'erin@example.com', password: 'password6' } })).body.token;
+
+    // Carol uploads a book big enough to be stored in parts.
+    const chapters = ['One', 'Two', 'Three', 'Four'].map((title) => ({
+      title,
+      paragraphs: [`Chapter ${title} begins.`, crypto.randomBytes(1500).toString('hex')],
+    }));
+    let res = await api('/books', { token: carol, method: 'POST', form: bookForm('paid.epub', await makeEpub(chapters, { title: 'Paid Book' })) });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const book = res.body.book;
+    assert.equal(book.sectionCount, 4);
+    assert.ok(book.file.parts.length > 1);
+    assert.equal(book.premium, null);
+    assert.equal(book.unlocked, true);
+    // Files stored before private names existed: an audiobook and narration for chapters 1 and 3.
+    const folder = `a-read/books/${book.id}`;
+    const legacy = (publicId) => ({ url: `https://res.cloudinary.com/demo/video/upload/v1/${publicId}`, publicId });
+    await Book.updateOne({ _id: book.id }, { $set: { audiobook: { ...legacy(`${folder}/audiobook-abc`), resourceType: 'video', duration: 60 } } });
+    for (const index of [0, 2]) {
+      const narration = { ...legacy(`${folder}/narration/section-000${index}`), voice: 'en-US-Neural2-F', duration: 3, marks: [0] };
+      await Section.updateOne({ book: book.id, index }, { $set: { narration } });
+    }
+
+    // Only admins set the price and the locked chapters.
+    const premium = (body, token = alice) => api(`/admin/books/${book.id}/premium`, { token, method: 'PUT', body });
+    assert.deepEqual((await api(`/admin/books/${book.id}/premium`, { token: alice })).body.premium, { enabled: false, price: null, lockedSections: [], updatedAt: null });
+    assert.equal((await premium({ enabled: true, price: 200, lockedSections: [2, 3] }, carol)).status, 403);
+    assert.match((await premium({ enabled: true, price: 200, lockedSections: [] })).body.error, /at least one chapter/);
+    assert.match((await premium({ enabled: true, lockedSections: [2] })).body.error, /Set the price/);
+    assert.match((await premium({ enabled: true, price: 5, lockedSections: [2] })).body.error, /lowest price is KES 10/);
+    assert.match((await premium({ enabled: true, price: 200, lockedSections: [2, 9] })).body.error, /part 10/);
+    res = await premium({ enabled: true, price: 200, lockedSections: [3, 2, 3] });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.premium.enabled, true);
+    assert.equal(res.body.premium.price, 200);
+    assert.deepEqual(res.body.premium.lockedSections, [2, 3]);
+
+    // The original file, the audiobook and the locked chapters' narration move to unguessable names.
+    const stored = await Book.findById(book.id);
+    assert.match(stored.file.publicId, /\/book-[0-9a-f]{24}\.epub$/);
+    assert.ok(stored.file.parts.every((part, i) => part.publicId === `${stored.file.publicId}.part${i}`));
+    assert.equal(stored.file.url, stored.file.parts[0].url);
+    assert.match(stored.audiobook.publicId, /audiobook-abc-[0-9a-f]{24}$/);
+    const narrated = await Section.find({ book: book.id, index: { $in: [0, 2] } }).sort({ index: 1 });
+    assert.equal(narrated[0].narration.publicId, `${folder}/narration/section-0000`, 'free chapters stay where they are');
+    assert.match(narrated[1].narration.publicId, /narration\/section-0002-[0-9a-f]{24}$/);
+    const moves = renamed.length;
+    assert.equal((await premium({ enabled: true, price: 200, lockedSections: [2, 3] })).status, 200);
+    assert.equal(renamed.length, moves, 'files are only moved once');
+
+    // A reader sees which chapters are locked, but can't open them, the file or the audiobook.
+    res = await api(`/books/${book.id}`, { token: erin });
+    assert.deepEqual(res.body.book.premium, { price: 200, lockedSections: [2, 3] });
+    assert.equal(res.body.book.unlocked, false);
+    assert.equal(res.body.book.file, undefined);
+    assert.deepEqual(res.body.book.audiobook, { duration: 60 });
+    assert.deepEqual((await api(`/books/${book.id}/sections`, { token: erin })).body.sections.map((s) => s.locked), [false, false, true, true]);
+    assert.equal((await api(`/books/${book.id}/sections/1`, { token: erin })).status, 200);
+    res = await api(`/books/${book.id}/sections/2`, { token: erin });
+    assert.equal(res.status, 402);
+    assert.deepEqual(res.body.details, { code: 'PREMIUM_LOCKED', price: 200 });
+    res = await api(`/books/${book.id}/offline`, { token: erin });
+    assert.deepEqual(res.body.sections.map((s) => Boolean(s.locked)), [false, false, true, true]);
+    assert.deepEqual(res.body.sections[2].paragraphs, []);
+    assert.equal(res.body.sections[2].narration, undefined);
+    assert.equal(res.body.sections[0].narration.publicId, `${folder}/narration/section-0000`);
+    res = await api('/books?access=premium', { token: erin });
+    assert.deepEqual(res.body.books.map((b) => [b.id, b.unlocked, b.file]), [[book.id, false, undefined]]);
+    assert.ok((await api('/books?access=free')).body.books.some((b) => b.id === freeBook.id));
+    assert.deepEqual((await api(`/books/${book.id}/sections`)).body.sections.map((s) => s.locked), [false, false, true, true]);
+    await api(`/progress/${book.id}`, { token: erin, method: 'PUT', body: { sectionIndex: 1, percent: 30 } });
+    const shelf = (await api('/progress', { token: erin })).body.items.find((item) => item.book.id === book.id).book;
+    assert.equal(shelf.audiobook, undefined, 'continue reading never hands out the audiobook');
+    assert.equal(shelf.hasAudio, true);
+
+    // The uploader and admins can always read everything.
+    for (const token of [carol, alice]) {
+      res = await api(`/books/${book.id}`, { token });
+      assert.equal(res.body.book.unlocked, true);
+      assert.ok(res.body.book.file.url);
+      assert.equal((await api(`/books/${book.id}/sections/2`, { token })).status, 200);
+    }
+
+    // Erin pays the book's price by M-Pesa.
+    const calls = [];
+    let pushes = 0;
+    let onQuery = async () => {};
+    setMpesaTransport(async (url, { body }) => {
+      calls.push({ url, body });
+      if (url.includes('/oauth/')) return { status: 200, json: { access_token: 'token', expires_in: '3599' } };
+      if (url.includes('/stkpushquery/')) {
+        await onQuery(body);
+        return { status: 500, json: { errorCode: '500.001.1001', errorMessage: 'The transaction is being processed' } };
+      }
+      pushes++;
+      const id = pushes === 1 ? 'ws_CO_book' : `ws_CO_book_${pushes}`;
+      return { status: 200, json: { ResponseCode: '0', CheckoutRequestID: id, MerchantRequestID: 'm_book' } };
+    });
+    let payment;
+    try {
+      res = await api('/payments/stk', { method: 'POST', body: { phone: '0712000001', bookId: book.id } });
+      assert.equal(res.status, 401);
+      res = await api('/payments/stk', { token: erin, method: 'POST', body: { phone: '0712000001', bookId: freeBook.id } });
+      assert.match(res.body.error, /free to read/);
+      res = await api('/payments/stk', { token: carol, method: 'POST', body: { phone: '0712000001', bookId: book.id } });
+      assert.equal(res.status, 409, 'the uploader can already read it');
+      res = await api('/payments/stk', { token: erin, method: 'POST', body: { phone: '0712000001', bookId: book.id, amount: 10 } });
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+      payment = res.body.payment;
+      assert.equal(payment.amount, 200, 'the price comes from the book, not the browser');
+      const push = calls.find((c) => c.url.endsWith('/processrequest'));
+      assert.equal(push.body.Amount, 200);
+      assert.equal(push.body.TransactionDesc, 'A-Read book');
+      // Asking again (another phone, or after a reload) while that prompt is open picks it back up.
+      res = await api('/payments/stk', { token: erin, method: 'POST', body: { phone: '0712000009', bookId: book.id } });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.resumed, true);
+      assert.equal(res.body.payment.id, payment.id, 'no second charge');
+      assert.equal(calls.filter((c) => c.url.endsWith('/processrequest')).length, 1);
+
+      // Two unlock requests at the very same moment (two tabs or phones) still make one payment.
+      const fay = (await api('/auth/register', { method: 'POST', body: { name: 'Fay', email: 'fay@example.com', password: 'password5' } })).body.token;
+      const both = await Promise.all(
+        ['0712000101', '0712000102'].map((phone) => api('/payments/stk', { token: fay, method: 'POST', body: { phone, bookId: book.id } })),
+      );
+      assert.deepEqual(both.map((r) => r.status).sort(), [200, 201]);
+      assert.equal(both[0].body.payment.id, both[1].body.payment.id);
+      // A prompt that never got an answer stops blocking after five minutes: a new one can be sent.
+      const { Payment } = await import('../src/models/Payment.js');
+      const stuck = both[0].body.payment.id;
+      await Payment.collection.updateOne({ _id: new mongoose.Types.ObjectId(stuck) }, { $set: { createdAt: new Date(Date.now() - 6 * 60_000) } });
+      res = await api('/payments/stk', { token: fay, method: 'POST', body: { phone: '0712000103', bookId: book.id } });
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+      assert.notEqual(res.body.payment.id, stuck);
+      assert.equal((await Payment.findById(stuck)).status, 'failed');
+
+      // M-Pesa's "paid" landing while we decide to give up on a slow payment is never overwritten.
+      const late = res.body.payment.id;
+      await Payment.collection.updateOne({ _id: new mongoose.Types.ObjectId(late) }, { $set: { createdAt: new Date(Date.now() - 6 * 60_000) } });
+      onQuery = () => Payment.collection.updateOne({ _id: new mongoose.Types.ObjectId(late) }, { $set: { status: 'paid', receipt: 'TJKLATE999' } });
+      res = await api('/payments/stk', { token: fay, method: 'POST', body: { phone: '0712000104', bookId: book.id } });
+      assert.equal(res.status, 409, JSON.stringify(res.body));
+      assert.equal((await Payment.findById(late)).status, 'paid');
+      assert.equal((await api(`/books/${book.id}/sections/2`, { token: fay })).status, 200, 'Fay paid, so the book is open');
+      onQuery = async () => {};
+
+      // While M-Pesa's amount for an earlier payment is being checked, no new prompt is sent.
+      const gus = (await api('/auth/register', { method: 'POST', body: { name: 'Gus', email: 'gus@example.com', password: 'password4' } })).body.token;
+      const gusId = (await api('/auth/me', { token: gus })).body.user.id;
+      await Payment.create({ user: gusId, book: book.id, purpose: 'book', phone: '254712000105', amount: 200, status: 'disputed', provider: 'hub' });
+      res = await api('/payments/stk', { token: gus, method: 'POST', body: { phone: '0712000105', bookId: book.id } });
+      assert.equal(res.status, 409);
+      assert.match(res.body.error, /no need to pay again/);
+
+      // A database with several waiting unlock payments from before the one-at-a-time rule keeps the
+      // newest waiting and gets the rule.
+      const { ensureUnlockIndex } = await import('../src/services/premium.js');
+      await Payment.collection.dropIndex('one_pending_unlock');
+      const legacy = [6, 3].map((minutes) => ({
+        user: new mongoose.Types.ObjectId(gusId), book: new mongoose.Types.ObjectId(freeBook.id), purpose: 'book', phone: '254712000106',
+        amount: 50, status: 'pending', provider: 'daraja', createdAt: new Date(Date.now() - minutes * 60_000),
+      }));
+      const { insertedIds } = await Payment.collection.insertMany(legacy);
+      assert.equal(await ensureUnlockIndex(), 1);
+      assert.equal((await Payment.findById(insertedIds[0])).status, 'failed', 'the older one');
+      assert.equal((await Payment.findById(insertedIds[1])).status, 'pending', 'the newest keeps waiting');
+      assert.ok((await Payment.collection.indexes()).some((i) => i.name === 'one_pending_unlock'));
+      await Payment.deleteMany({ _id: { $in: Object.values(insertedIds) } });
+      assert.equal((await api(`/books/${book.id}/sections/2`, { token: erin })).status, 402, 'locked until M-Pesa confirms');
+      await api('/payments/mpesa/callback/callback-secret', {
+        method: 'POST',
+        body: {
+          Body: {
+            stkCallback: {
+              MerchantRequestID: 'm_book',
+              CheckoutRequestID: 'ws_CO_book',
+              ResultCode: 0,
+              ResultDesc: 'Paid',
+              CallbackMetadata: { Item: [{ Name: 'Amount', Value: 200 }, { Name: 'MpesaReceiptNumber', Value: 'TJKBOOK001' }] },
+            },
+          },
+        },
+      });
+      assert.equal((await api(`/payments/${payment.id}`)).body.payment.status, 'paid');
+    } finally {
+      setMpesaTransport(null);
+    }
+
+    // Paid: every chapter, the file and the audiobook open for Erin (and only for Erin).
+    res = await api(`/books/${book.id}`, { token: erin });
+    assert.equal(res.body.book.unlocked, true);
+    assert.ok(res.body.book.file.url);
+    assert.ok(res.body.book.audiobook.url);
+    assert.deepEqual((await api(`/books/${book.id}/sections`, { token: erin })).body.sections.map((s) => s.locked), [false, false, false, false]);
+    assert.equal((await api(`/books/${book.id}/sections/2`, { token: erin })).status, 200);
+    assert.equal((await api('/books?access=premium', { token: erin })).body.books[0].unlocked, true);
+    assert.equal((await api(`/books/${book.id}`)).body.book.unlocked, false);
+    assert.equal((await api('/payments/stk', { token: erin, method: 'POST', body: { phone: '0712000002', bookId: book.id } })).status, 409);
+
+    // Admins see what each premium book has sold.
+    res = await api('/admin/premium', { token: alice });
+    assert.deepEqual(res.body.books.find((b) => b.id === book.id).sales, { amount: 400, count: 2 }, 'Erin and Fay');
+    assert.equal((await api('/admin/premium', { token: erin })).status, 403);
+    res = await api('/payments?purpose=book', { token: alice });
+    const erinsPayment = res.body.payments.find((p) => p.id === payment.id);
+    assert.deepEqual([erinsPayment.book.title, erinsPayment.status], ['Paid Book', 'paid']);
+    assert.ok(res.body.payments.every((p) => p.purpose === 'book'));
+    assert.deepEqual(res.body.totals.byPurpose.book, { amount: 400, count: 2 });
+    assert.equal((await api('/admin/stats', { token: alice })).body.premium, 1);
+
+    // Turning premium off frees the book for everyone and keeps the settings for later.
+    res = await premium({ enabled: false });
+    assert.deepEqual(res.body.premium, { ...res.body.premium, enabled: false, price: 200, lockedSections: [2, 3] });
+    res = await api(`/books/${book.id}`);
+    assert.equal(res.body.book.premium, null);
+    assert.equal(res.body.book.unlocked, true);
+    assert.equal((await api('/books?access=premium')).body.total, 0);
+    assert.ok((await api('/admin/premium', { token: alice })).body.books.some((b) => b.id === book.id && !b.premium.enabled));
+
+    // While it was free, everyone was given the file and audiobook URLs, so turning premium back on
+    // moves them again, even though their names already look private.
+    const freeCopy = (await api(`/books/${book.id}`, { token: erin })).body.book;
+    let fresh = await Book.findById(book.id);
+    const handedOut = { file: fresh.file.publicId, audiobook: fresh.audiobook.publicId };
+    // A rename that fails part-way (here the audiobook) leaves the book free and consistent…
+    renameFails = (from) => from === handedOut.audiobook;
+    res = await premium({ enabled: true });
+    assert.equal(res.status, 502);
+    fresh = await Book.findById(book.id);
+    assert.equal(fresh.premium.enabled, false);
+    const movedFile = fresh.file.publicId;
+    assert.notEqual(movedFile, handedOut.file, 'the file move that succeeded is recorded');
+    assert.ok(renamed.some((r) => r.to === `${movedFile}.part0`), 'and the database matches where the file is now');
+    assert.equal(fresh.audiobook.publicId, handedOut.audiobook);
+    // …and trying again finishes the job.
+    renameFails = () => false;
+    res = await premium({ enabled: true });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    fresh = await Book.findById(book.id);
+    assert.notEqual(fresh.audiobook.publicId, handedOut.audiobook);
+    assert.match(fresh.audiobook.publicId, /audiobook-abc-[0-9a-f]{24}$/);
+    assert.notEqual(fresh.file.url, freeCopy.file.url, 'the URL handed out while free no longer works');
+    // Locking one more chapter moves only that chapter's narration (chapter 0's audio was public).
+    const chapterZero = (await Section.findOne({ book: book.id, index: 0 })).narration.publicId;
+    res = await premium({ lockedSections: [0, 2, 3], enabled: true });
+    assert.equal(res.status, 200);
+    assert.notEqual((await Section.findOne({ book: book.id, index: 0 })).narration.publicId, chapterZero);
+
+    // An older PDF whose cover is drawn from the PDF itself needs its own cover first.
+    await Book.updateOne({ _id: freeBook.id }, { $set: { coverSource: 'pdf' } });
+    res = await api(`/admin/books/${freeBook.id}/premium`, { token: alice, method: 'PUT', body: { enabled: true, price: 50, lockedSections: [0] } });
+    assert.equal(res.status, 409);
+    assert.match(res.body.error, /Upload a cover image/);
+    await Book.updateOne({ _id: freeBook.id }, { $set: { coverSource: 'none' } });
+    await premium({ enabled: false });
+  });
+
+  let sam;
+
+  test('super admins manage roles and site settings', async () => {
+    let res = await api('/auth/register', { method: 'POST', body: { name: 'Sam', email: 'sam@example.com', password: 'password7' } });
+    sam = res.body.token;
+    assert.equal(res.body.user.role, 'superadmin', 'SUPER_ADMIN_EMAILS makes the account a super admin');
+    res = await api('/auth/login', { method: 'POST', body: { email: 'sam@example.com', password: 'password7' } });
+    assert.equal(res.body.user.role, 'superadmin');
+
+    // Super admins pass every admin check.
+    assert.equal((await api('/admin/stats', { token: sam })).status, 200);
+    assert.equal((await api('/admin/premium', { token: sam })).status, 200);
+
+    // Roles: only super admins change them, never their own.
+    const users = (await api('/admin/users', { token: sam })).body.users;
+    const id = (email) => users.find((u) => u.email === email).id;
+    assert.equal((await api(`/admin/users/${id('sam@example.com')}`, { token: sam, method: 'PATCH', body: { role: 'user' } })).status, 400);
+    res = await api(`/admin/users/${id('carol@example.com')}`, { token: sam, method: 'PATCH', body: { role: 'admin' } });
+    assert.equal(res.body.user.role, 'admin');
+    assert.equal((await api(`/admin/users/${id('alice@example.com')}`, { token: carol, method: 'PATCH', body: { role: 'user' } })).status, 403);
+    // Admins remove readers, but only a super admin removes an admin.
+    assert.equal((await api(`/admin/users/${id('carol@example.com')}`, { token: alice, method: 'DELETE' })).status, 403);
+    res = await api(`/admin/users/${id('carol@example.com')}`, { token: sam, method: 'PATCH', body: { role: 'user' } });
+    assert.equal(res.body.user.role, 'user');
+    assert.equal((await api('/admin/stats', { token: carol })).status, 403);
+
+    // System status and settings are for super admins only.
+    assert.equal((await api('/system/status', { token: alice })).status, 403);
+    assert.equal((await api('/system/settings', { token: alice, method: 'PUT', body: { signupsOpen: false } })).status, 403);
+    res = await api('/system/status', { token: sam });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.services.find((s) => s.id === 'database').ok, true);
+    assert.equal(res.body.counts.superAdmins, 1);
+    assert.deepEqual((await api('/system/config')).body, { signupsOpen: true, uploads: 'everyone', quotesEnabled: true, announcement: '' });
+
+    const settings = { signupsOpen: false, uploads: 'admins', quotesEnabled: false, announcement: '  Maintenance tonight at 10 pm  ' };
+    res = await api('/system/settings', { token: sam, method: 'PUT', body: settings });
+    assert.deepEqual(res.body.settings, { ...settings, announcement: 'Maintenance tonight at 10 pm' });
+    assert.equal((await api('/system/config')).body.announcement, 'Maintenance tonight at 10 pm');
+
+    // Closed sign-ups: new accounts are refused (by email or Google), except configured admins.
+    res = await api('/auth/register', { method: 'POST', body: { name: 'Newbie', email: 'newbie@example.com', password: 'password8' } });
+    assert.equal(res.status, 403);
+    assert.match(res.body.error, /sign-ups are closed/);
+    assert.equal((await api('/auth/google', { method: 'POST', body: { credential: 'g-9|newbie@example.com|yes|padding-padding' } })).status, 403);
+    res = await api('/auth/register', { method: 'POST', body: { name: 'Sue', email: 'sue@example.com', password: 'password9' } });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.user.role, 'superadmin');
+    assert.equal((await api('/auth/login', { method: 'POST', body: { email: 'erin@example.com', password: 'password6' } })).status, 200, 'members still sign in');
+
+    // Uploads limited to admins.
+    res = await api('/books', { token: carol, method: 'POST', form: bookForm('nope.txt', 'Not today.') });
+    assert.equal(res.status, 403);
+    assert.match(res.body.error, /Only admins/);
+    res = await api('/books', { token: alice, method: 'POST', form: bookForm('admin-only.txt', 'Admins can still add books.') });
+    assert.equal(res.status, 201);
+
+    res = await api('/system/settings', { token: sam, method: 'PUT', body: { signupsOpen: true, uploads: 'everyone', quotesEnabled: true, announcement: '' } });
+    assert.deepEqual(res.body.settings, { signupsOpen: true, uploads: 'everyone', quotesEnabled: true, announcement: '' });
+    assert.equal((await api('/system/settings', { token: sam, method: 'PUT', body: { uploads: 'nobody' } })).status, 400);
+
+    // Accounts listed in SUPER_ADMIN_EMAILS are promoted at startup too.
+    const { User } = await import('../src/models/User.js');
+    const { syncConfiguredRoles } = await import('../src/services/roles.js');
+    await User.updateOne({ email: 'sue@example.com' }, { $set: { role: 'user' } });
+    assert.equal(await syncConfiguredRoles(), 1);
+    assert.equal((await User.findOne({ email: 'sue@example.com' })).role, 'superadmin');
+  });
+
+  test('closed sign-ups also stop accounts that were never confirmed', async () => {
+    const { setEmailSender } = await import('../src/services/email.js');
+    const emails = [];
+    setEmailSender(async (m) => emails.push(m));
+    try {
+      // Signed up while open, link not clicked yet.
+      assert.equal((await api('/auth/register', { method: 'POST', body: { name: 'Bot', email: 'bot@example.com', password: 'password0' } })).status, 201);
+      const link = new URL(emails.at(-1).text.match(/https?:\/\/\S+/)[0]).searchParams.get('token');
+      await api('/system/settings', { token: sam, method: 'PUT', body: { signupsOpen: false } });
+      let res = await api('/auth/register', { method: 'POST', body: { name: 'Bot', email: 'bot@example.com', password: 'password0' } });
+      assert.equal(res.status, 403);
+      const sent = emails.length;
+      assert.equal((await api('/auth/resend-verification', { method: 'POST', body: { email: 'bot@example.com' } })).status, 200);
+      assert.equal(emails.length, sent, 'no new link while sign-ups are closed');
+      assert.equal((await api('/auth/verify-email', { method: 'POST', body: { token: link } })).status, 403);
+      assert.equal((await api('/auth/google', { method: 'POST', body: { credential: 'g-7|bot@example.com|yes|padding-padding' } })).status, 403);
+      // Open again: the same link works.
+      await api('/system/settings', { token: sam, method: 'PUT', body: { signupsOpen: true } });
+      res = await api('/auth/verify-email', { method: 'POST', body: { token: link } });
+      assert.equal(res.status, 200);
+    } finally {
+      setEmailSender(null);
+      await api('/system/settings', { token: sam, method: 'PUT', body: { signupsOpen: true } });
+    }
+  });
+
+  test('book quotes appear once each and never from the same book twice in a row', async () => {
+    const { seedClassicQuotes, removeDuplicateQuotes } = await import('../src/services/quotes.js');
+    const { CLASSIC_QUOTES } = await import('../src/data/classicQuotes.js');
+    const { Quote } = await import('../src/models/Quote.js');
+    // A first start that fails part-way tries again next time.
+    const insertMany = Quote.insertMany;
+    Quote.insertMany = async () => {
+      throw new Error('connection lost');
+    };
+    await assert.rejects(seedClassicQuotes(), /connection lost/);
+    Quote.insertMany = insertMany;
+    assert.equal(await seedClassicQuotes(), CLASSIC_QUOTES.length, 'the classics fill an empty list on first start');
+    assert.equal(await seedClassicQuotes(), 0, 'and only once');
+
+    // A visitor opens the app once per quote: every quote shows once, books never repeat back to back.
+    let seen = [];
+    let lastBook = null;
+    const shown = [];
+    for (let i = 0; i < CLASSIC_QUOTES.length; i++) {
+      const res = await api('/quotes/next', { method: 'POST', body: { seen, lastBook } });
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      const { quote, reset } = res.body;
+      assert.equal(reset, false, `round ended early at ${i}`);
+      assert.notEqual(quote.bookKey, lastBook, `quote ${i} came from the same book as the one before`);
+      shown.push(quote);
+      seen.push(quote.id);
+      lastBook = quote.bookKey;
+    }
+    assert.equal(new Set(shown.map((q) => q.id)).size, CLASSIC_QUOTES.length, 'no quote repeats in a round');
+    let res = await api('/quotes/next', { method: 'POST', body: { seen, lastBook } });
+    assert.equal(res.body.reset, true, 'once every quote has been seen, a new round starts');
+    assert.notEqual(res.body.quote.bookKey, lastBook);
+    assert.equal(typeof res.body.quote.text, 'string');
+    assert.ok(res.body.quote.bookTitle);
+
+    // Admins manage the list; readers can't.
+    assert.equal((await api('/quotes', { token: carol })).status, 403);
+    assert.equal((await api('/quotes', { token: carol, method: 'POST', body: { text: 'Hi', bookTitle: 'X' } })).status, 403);
+    assert.match((await api('/quotes', { token: alice, method: 'POST', body: { text: 'No book given.' } })).body.error, /Which book/);
+    res = await api('/quotes', { token: alice, method: 'POST', body: { text: 'Water boils at 100 degrees.', bookId: freeBook.id } });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const linked = res.body.quote;
+    assert.equal(linked.bookTitle, freeBook.title, 'a library book gives its title');
+    assert.equal(linked.book.id, freeBook.id);
+    res = await api(`/quotes/${linked.id}`, { token: alice, method: 'PATCH', body: { enabled: false } });
+    assert.equal(res.body.quote.enabled, false);
+    // Only that quote is left unseen, but it's switched off: a new round starts instead.
+    res = await api('/quotes/next', { method: 'POST', body: { seen, lastBook } });
+    assert.notEqual(res.body.quote.id, linked.id);
+    assert.equal((await api('/quotes', { token: sam })).body.quotes.length, CLASSIC_QUOTES.length + 1);
+    assert.equal((await api(`/quotes/${linked.id}`, { token: alice, method: 'DELETE' })).status, 204);
+
+    // A deleted classic can be brought back.
+    await api(`/quotes/${shown[0].id}`, { token: alice, method: 'DELETE' });
+    assert.equal((await api('/quotes/classics', { token: alice, method: 'POST' })).body.added, 1);
+    // A double click (two imports at once) still adds each missing quote only once.
+    const gone = (await api('/quotes', { token: alice })).body.quotes.slice(0, 3);
+    for (const q of gone) await api(`/quotes/${q.id}`, { token: alice, method: 'DELETE' });
+    const both = await Promise.all([1, 2].map(() => api('/quotes/classics', { token: alice, method: 'POST' })));
+    assert.equal(both[0].body.added + both[1].body.added, 3);
+    assert.equal((await api('/quotes', { token: alice })).body.quotes.length, CLASSIC_QUOTES.length);
+    res = await api('/quotes', { token: alice, method: 'POST', body: { text: CLASSIC_QUOTES[0].text, bookTitle: 'Somewhere else' } });
+    assert.equal(res.status, 409);
+    assert.match(res.body.error, /already in the list/);
+    // A database with duplicates from before the unique rule keeps the oldest of each.
+    await Quote.collection.dropIndex('text_1');
+    const copy = (await Quote.findOne({ text: CLASSIC_QUOTES[1].text }).lean());
+    await Quote.collection.insertOne({ ...copy, _id: new mongoose.Types.ObjectId(), createdAt: new Date() });
+    assert.equal(await removeDuplicateQuotes(), 1);
+    assert.equal(await Quote.countDocuments({ text: CLASSIC_QUOTES[1].text }), 1);
+    assert.equal((await Quote.findOne({ text: CLASSIC_QUOTES[1].text })).id, String(copy._id));
+    await Quote.createIndexes();
+
+    // A super admin can switch the popup off.
+    await api('/system/settings', { token: sam, method: 'PUT', body: { quotesEnabled: false } });
+    assert.equal((await api('/quotes/next', { method: 'POST', body: {} })).body.quote, null);
+    await api('/system/settings', { token: sam, method: 'PUT', body: { quotesEnabled: true } });
+  });
+
+  test('opening the app wakes ISA Tech Hub', async () => {
+    const { env } = await import('../src/config/env.js');
+    const { hubWaking, resetHubWake } = await import('../src/services/hub.js');
+    assert.deepEqual((await api('/system/wake')).body, { ok: true, hub: 'off' }, 'nothing to wake without the Hub settings');
+
+    let hits = 0;
+    let answer = 200;
+    const fakeHub = http.createServer((req, res) => {
+      if (req.url === '/v1/config') hits++;
+      res.writeHead(answer, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(answer === 200 ? { platform: { name: 'A-Read' }, till: { kind: 'till', payNumber: '5557777', active: true } } : { error: 'Invalid API key' }));
+    });
+    await new Promise((resolve) => fakeHub.listen(0, '127.0.0.1', resolve));
+    const saved = { ...env.hub };
+    Object.assign(env.hub, { url: `http://127.0.0.1:${fakeHub.address().port}`, apiKey: 'isa_sk_test', webhookSecret: 'whsec_test' });
+    try {
+      resetHubWake();
+      let res = await api('/system/wake');
+      assert.equal(res.status, 202);
+      assert.equal(res.body.hub, 'waking');
+      await hubWaking();
+      assert.equal(hits, 1);
+      // Opened again a moment later: the Hub is awake, so it isn't asked again.
+      assert.equal((await api('/system/wake')).body.hub, 'awake');
+      assert.equal(hits, 1);
+      res = await api('/system/status', { token: sam });
+      assert.equal(res.body.hub.enabled, true);
+      assert.equal(res.body.hub.last.ok, true);
+
+      // A Hub that refuses the key is reported to super admins in plain words.
+      resetHubWake();
+      answer = 401;
+      await api('/system/wake');
+      await hubWaking();
+      res = await api('/system/status', { token: sam });
+      assert.equal(res.body.hub.last.ok, false);
+      assert.match(res.body.hub.last.error, /rejected ISA_HUB_API_KEY/);
+      await api('/system/wake');
+      assert.equal(hits, 2, 'a failed wake is retried after a pause, not on every open');
+
+      // While the Hub is asleep or briefly down, readers keep the payment form (the prompt itself
+      // reports an outage); a refused key means payments aren't set up.
+      const { clearHubConfig } = await import('../src/services/hub.js');
+      clearHubConfig();
+      answer = 503;
+      assert.equal((await api('/payments/config')).body.enabled, true);
+      clearHubConfig();
+      answer = 401;
+      assert.equal((await api('/payments/config')).body.enabled, false);
+    } finally {
+      Object.assign(env.hub, saved);
+      resetHubWake();
+      fakeHub.close();
+    }
   });
 });

@@ -17,6 +17,7 @@ import {
   bookFolder,
   deleteBookFolder,
   destroyAsset,
+  privateSuffix,
   uploadBookFile,
   uploadBuffer,
   uploadFile,
@@ -80,6 +81,7 @@ export async function createBook({ user, files, fields }) {
       description: fields.description || metadata.description || '',
       language: fields.language || metadata.language || '',
       tags: parseTags(fields.tags),
+      category: fields.category || undefined,
       format,
       originalName: file.originalname,
       file: fileAsset,
@@ -128,7 +130,7 @@ export async function attachAudiobook(book, audioFile, user) {
   if (!audioFile) throw badRequest('Choose an audio file to upload');
   assertCloudinaryConfigured();
   const asset = await uploadFile(audioFile.path, {
-    publicId: `${bookFolder(book._id)}/audiobook-${stamp()}`,
+    publicId: `${bookFolder(book._id)}/audiobook-${stamp()}-${privateSuffix()}`,
     resourceType: 'video', // Cloudinary stores audio under the "video" resource type
     size: audioFile.size,
   });

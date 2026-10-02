@@ -6,9 +6,10 @@ import { z } from 'zod';
 import { env } from '../config/env.js';
 import { requireAuth, signToken } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
-import { User } from '../models/User.js';
+import { User, roleRank } from '../models/User.js';
 import { emailEnabled, sendVerificationEmail } from '../services/email.js';
-import { HttpError, badRequest, conflict, unauthorized } from '../utils/httpError.js';
+import { getSettings } from '../services/settings.js';
+import { HttpError, badRequest, conflict, forbidden, unauthorized } from '../utils/httpError.js';
 
 const router = Router();
 
@@ -34,7 +35,23 @@ const loginSchema = z.object({
   password: z.string().min(1, 'Enter your password'),
 });
 
-const roleFor = (address) => (env.adminEmails.includes(address) ? 'admin' : 'user');
+// The role SUPER_ADMIN_EMAILS / ADMIN_EMAILS give this address.
+const roleFor = (address) =>
+  env.superAdminEmails.includes(address) ? 'superadmin' : env.adminEmails.includes(address) ? 'admin' : 'user';
+
+// Raises the user to their configured role. Never lowers it: roles given in the admin panel stay.
+function applyConfiguredRole(user, address) {
+  if (roleRank(roleFor(address)) <= roleRank(user.role)) return false;
+  user.role = roleFor(address);
+  return true;
+}
+
+// A super admin can close sign-ups; the people listed in the settings can always join.
+async function assertSignupsOpen(address) {
+  if (roleFor(address) === 'user' && !(await getSettings()).signupsOpen) {
+    throw forbidden('New sign-ups are closed right now. Please check back later.');
+  }
+}
 const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
 const VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -60,6 +77,8 @@ router.post('/register', authLimiter, validate(registerSchema), async (req, res)
   const { name, email: address, password } = req.valid.body;
   let user = await User.findOne({ email: address });
   if (user && user.isVerified()) throw conflict('An account with that email already exists. Log in instead.');
+  // An unconfirmed account isn't a member yet, so closed sign-ups stop it too.
+  await assertSignupsOpen(address);
 
   // An unconfirmed sign-up can be repeated (e.g. after a typo in the password or a lost email).
   user ??= new User({ email: address, role: roleFor(address) });
@@ -84,8 +103,10 @@ router.post('/register', authLimiter, validate(registerSchema), async (req, res)
 
 router.post('/resend-verification', authLimiter, validate(z.object({ email })), async (req, res) => {
   const user = await User.findOne({ email: req.valid.body.email });
-  // Same answer whether or not the account exists, so this can't be used to probe emails.
-  if (user && !user.isVerified() && emailEnabled()) {
+  const allowed = user && (await assertSignupsOpen(user.email).then(() => true, () => false));
+  // Same answer whether or not the account exists (or sign-ups are closed), so this can't be used
+  // to probe emails.
+  if (allowed && !user.isVerified() && emailEnabled()) {
     await sendVerification(user).catch((err) => console.error('Could not resend confirmation email:', err.message));
   }
   res.json({ ok: true });
@@ -97,6 +118,8 @@ router.post('/verify-email', authLimiter, validate(z.object({ token: z.string().
     verifyTokenExpires: { $gt: new Date() },
   });
   if (!user) throw badRequest('This confirmation link is invalid or has expired. Request a new one from the sign-in page.');
+  // Links sent before sign-ups were closed stop working too.
+  await assertSignupsOpen(user.email);
   user.emailVerified = true;
   user.verifyTokenHash = undefined;
   user.verifyTokenExpires = undefined;
@@ -117,11 +140,8 @@ router.post('/login', authLimiter, validate(loginSchema), async (req, res) => {
     throw err;
   }
 
-  // Pick up ADMIN_EMAILS changes on the next login.
-  if (roleFor(address) === 'admin' && user.role !== 'admin') {
-    user.role = 'admin';
-    await user.save();
-  }
+  // Pick up ADMIN_EMAILS / SUPER_ADMIN_EMAILS changes on the next login.
+  if (applyConfiguredRole(user, address)) await user.save();
   res.json(session(user));
 });
 
@@ -151,13 +171,15 @@ router.post('/google', authLimiter, validate(z.object({ credential: z.string().m
 
   const address = profile.email.toLowerCase();
   let user = (await User.findOne({ googleId: profile.sub })) || (await User.findOne({ email: address }));
+  // New accounts, and email sign-ups that were never confirmed, need sign-ups to be open.
+  if (!user || !user.isVerified()) await assertSignupsOpen(address);
   if (!user) {
     user = new User({ email: address, name: (profile.name || address.split('@')[0]).slice(0, 80), role: roleFor(address) });
   }
   // Google has confirmed the address, which also confirms an unverified email sign-up.
   user.googleId = profile.sub;
   user.emailVerified = true;
-  if (roleFor(address) === 'admin') user.role = 'admin';
+  applyConfiguredRole(user, address);
   await user.save();
   res.json(session(user));
 });

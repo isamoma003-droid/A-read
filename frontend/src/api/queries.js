@@ -11,6 +11,7 @@ export const keys = {
   bookmarks: (id) => ['bookmarks', id],
   narration: (id) => ['narration', id],
   tags: ['tags'],
+  categories: ['categories'],
   ttsStatus: ['tts-status'],
   voices: (language) => ['voices', language],
   adminStats: ['admin', 'stats'],
@@ -23,6 +24,11 @@ export const keys = {
   paymentConfig: ['payments', 'config'],
   payment: (id) => ['payments', id],
   adminPayments: (status) => ['admin', 'payments', status],
+  adminPremium: ['admin', 'premium'],
+  bookPremium: (id) => ['admin', 'premium', id],
+  systemConfig: ['system', 'config'],
+  systemStatus: ['admin', 'system'],
+  adminQuotes: ['admin', 'quotes'],
 };
 
 function toQuery(params) {
@@ -45,6 +51,9 @@ export function useBooks(params) {
 
 export const useTags = () => useQuery({ queryKey: keys.tags, queryFn: () => api('/books/tags') });
 
+export const useCategories = () =>
+  useQuery({ queryKey: keys.categories, queryFn: () => api('/categories').then((r) => r.categories), staleTime: 5 * 60 * 1000 });
+
 export const useContinueReading = (enabled = true) =>
   useQuery({ queryKey: keys.continueReading, queryFn: () => api('/progress').then((r) => r.items), enabled });
 
@@ -64,7 +73,9 @@ export const sectionQuery = (id, index) => ({
   staleTime: 5 * 60 * 1000,
 });
 
-export const useSection = (id, index) => useQuery({ ...sectionQuery(id, index), enabled: Boolean(id) && index >= 0 });
+// Locked premium chapters aren't requested (the server would answer 402).
+export const useSection = (id, index, { locked = false } = {}) =>
+  useQuery({ ...sectionQuery(id, index), enabled: Boolean(id) && index >= 0 && !locked });
 
 export const useProgress = (id) =>
   useQuery({
@@ -161,3 +172,17 @@ export const useAdminPayments = (status) =>
     queryFn: () => api(`/payments${toQuery({ status })}`),
     placeholderData: (previous) => previous,
   });
+
+// Admin: every premium book with its sales, and one book's premium settings.
+export const useAdminPremium = () => useQuery({ queryKey: keys.adminPremium, queryFn: () => api('/admin/premium').then((r) => r.books) });
+
+export const useBookPremium = (id) =>
+  useQuery({ queryKey: keys.bookPremium(id), queryFn: () => api(`/admin/books/${id}/premium`).then((r) => r.premium), enabled: Boolean(id) });
+
+// Site settings a super admin controls (sign-ups, uploads, quote popup, announcement).
+export const useSystemConfig = () =>
+  useQuery({ queryKey: keys.systemConfig, queryFn: () => api('/system/config'), staleTime: 5 * 60 * 1000, retry: false });
+
+export const useSystemStatus = () => useQuery({ queryKey: keys.systemStatus, queryFn: () => api('/system/status') });
+
+export const useAdminQuotes = () => useQuery({ queryKey: keys.adminQuotes, queryFn: () => api('/quotes').then((r) => r.quotes) });

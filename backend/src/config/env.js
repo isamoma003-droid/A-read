@@ -38,6 +38,8 @@ export const env = {
   // Where shared links send people (defaults to the first CLIENT_ORIGIN).
   frontendUrl: (process.env.FRONTEND_URL || list('CLIENT_ORIGIN')[0] || 'http://localhost:5173').replace(/\/$/, ''),
   adminEmails: list('ADMIN_EMAILS'),
+  // Super admins run the whole system: roles, site settings, and everything admins can do.
+  superAdminEmails: list('SUPER_ADMIN_EMAILS'),
   cloudinaryUrl: process.env.CLOUDINARY_URL,
   cloudinaryFolder: process.env.CLOUDINARY_FOLDER || 'a-read',
   maxBookMb: number('MAX_BOOK_MB', 100),
