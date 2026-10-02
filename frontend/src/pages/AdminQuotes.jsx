@@ -17,6 +17,7 @@ export default function AdminQuotes() {
   const [editing, setEditing] = useState(null);
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState(null);
+  const [importing, setImporting] = useState(false);
   const [actionError, setActionError] = useState(null);
   const refresh = () => queryClient.invalidateQueries({ queryKey: keys.adminQuotes });
   const books = new Set((quotes || []).filter((q) => q.enabled).map((q) => q.bookKey)).size;
@@ -37,7 +38,9 @@ export default function AdminQuotes() {
   const toggle = (q) => run(() => api(`/quotes/${q.id}`, { method: 'PATCH', body: { enabled: !q.enabled } }));
   const remove = (q) => window.confirm('Delete this quote?') && run(() => api(`/quotes/${q.id}`, { method: 'DELETE' }));
   const addClassics = async () => {
+    setImporting(true);
     const result = await run(() => api('/quotes/classics', { method: 'POST' }));
+    setImporting(false);
     if (result) setNotice(result.added ? `Added ${result.added} classic quote${result.added === 1 ? '' : 's'}.` : 'All the classic quotes are already in the list.');
   };
 
@@ -57,8 +60,8 @@ export default function AdminQuotes() {
           <button type="button" className="button button-primary" onClick={() => setAdding(true)}>
             <Plus size={16} aria-hidden="true" /> Add a quote
           </button>
-          <button type="button" className="button" onClick={addClassics}>
-            <Sparkles size={16} aria-hidden="true" /> Add the classic quotes
+          <button type="button" className="button" onClick={addClassics} disabled={importing}>
+            <Sparkles size={16} aria-hidden="true" /> {importing ? 'Adding…' : 'Add the classic quotes'}
           </button>
         </div>
       )}

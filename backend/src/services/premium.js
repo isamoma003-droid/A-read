@@ -1,5 +1,6 @@
 // Premium books: an admin sets a price and picks chapters (sections) to lock. A reader opens them
 // by paying once with M-Pesa; the uploader and admins can always open everything.
+import { Book } from '../models/Book.js';
 import { Payment } from '../models/Payment.js';
 import { Section } from '../models/Section.js';
 import { HttpError } from '../utils/httpError.js';
@@ -32,27 +33,45 @@ export const lockedError = (book) =>
   });
 
 // Cloudinary URLs are public and the original file holds every chapter, so when a book goes
-// premium its file, audiobook and the narration of locked chapters move to unguessable names.
-// Only readers who may open them are ever given the new URLs. Files that already have private
-// names are left alone, so this is cheap to call on every premium change.
-export async function secureBookFiles(book) {
+// premium its file, audiobook and the narration of locked chapters move to fresh, unguessable
+// names. Only readers who may open them are ever given the new URLs.
+//
+// `previous` is the book's premium settings before this change. Readers were given the file and
+// audiobook URLs while the book was free, so going premium (from free) always moves them, even if
+// their names already look private; the same goes for the narration of newly locked chapters.
+// While a book stays premium, files with private names were only ever given to readers who could
+// open them, so they stay put.
+//
+// Each move is written to MongoDB as soon as it's done, so a failure part-way leaves the book
+// consistent (still free, files where the database says) and a retry carries on from there.
+export async function secureBookFiles(book, previous) {
+  const wasPremium = isPremium({ premium: previous });
+  const lockedBefore = new Set(wasPremium ? previous.lockedSections : []);
+  const mustMove = (publicId, handedOut) => handedOut || !hasPrivateName(publicId);
   try {
-    await secureMainFile(book);
+    if (book.file && mustMove(book.file.publicId, !wasPremium)) await moveMainFile(book);
+
     const audiobook = book.audiobook;
-    if (audiobook?.publicId && !hasPrivateName(audiobook.publicId)) {
-      const renamed = await renameAsset(audiobook.publicId, `${audiobook.publicId}-${privateSuffix()}`, 'video');
+    if (audiobook?.publicId && mustMove(audiobook.publicId, !wasPremium)) {
+      const from = audiobook.publicId;
+      const renamed = await renameAsset(from, freshName(from), audiobook.resourceType || 'video');
+      await Book.updateOne(
+        { _id: book._id, 'audiobook.publicId': from },
+        { $set: { 'audiobook.url': renamed.url, 'audiobook.publicId': renamed.publicId } },
+      );
       audiobook.url = renamed.url;
       audiobook.publicId = renamed.publicId;
     }
+
     const sections = await Section.find({
       book: book._id,
       index: { $in: book.premium.lockedSections },
       'narration.publicId': { $exists: true },
-    }).select('narration.publicId');
+    }).select('index narration.publicId');
     for (const section of sections) {
       const from = section.narration.publicId;
-      if (hasPrivateName(from)) continue;
-      const renamed = await renameAsset(from, `${from}-${privateSuffix()}`, 'video');
+      if (!mustMove(from, !lockedBefore.has(section.index))) continue;
+      const renamed = await renameAsset(from, freshName(from), 'video');
       // Only if a narration job hasn't replaced this audio in the meantime.
       await Section.updateOne(
         { _id: section._id, 'narration.publicId': from },
@@ -65,28 +84,36 @@ export async function secureBookFiles(book) {
   }
 }
 
-async function secureMainFile(book) {
+// "…/audiobook-x-<old suffix>" -> "…/audiobook-x-<new suffix>"
+const freshName = (publicId) => `${publicId.replace(/-[0-9a-f]{24}$/, '')}-${privateSuffix()}`;
+
+// Moves the original file (or all its parts) to a new private name and records it, or puts
+// everything back if any step fails.
+async function moveMainFile(book) {
   const file = book.file;
-  if (!file || hasPrivateName(file.publicId)) return;
+  const type = file.resourceType || 'raw';
   const publicId = `${bookFolder(book._id)}/book-${privateSuffix()}.${book.format}`;
-  if (!file.parts?.length) {
-    const renamed = await renameAsset(file.publicId, publicId, 'raw');
-    file.url = renamed.url;
-    file.publicId = renamed.publicId;
-    return;
-  }
-  // A large book is stored in parts: move them all, or put back the ones already moved.
+  const pieces = file.parts?.length
+    ? file.parts.map((part, i) => ({ from: part.publicId, to: `${publicId}.part${i}`, bytes: part.bytes }))
+    : [{ from: file.publicId, to: publicId }];
   const moved = [];
   try {
-    for (const [i, part] of file.parts.entries()) {
-      const renamed = await renameAsset(part.publicId, `${publicId}.part${i}`, 'raw');
-      moved.push({ from: part.publicId, to: renamed });
-    }
+    for (const piece of pieces) moved.push({ ...piece, renamed: await renameAsset(piece.from, piece.to, type) });
+    const next = file.parts?.length
+      ? {
+          url: moved[0].renamed.url,
+          publicId,
+          parts: moved.map((m) => ({ url: m.renamed.url, publicId: m.renamed.publicId, bytes: m.bytes })),
+        }
+      : { url: moved[0].renamed.url, publicId: moved[0].renamed.publicId };
+    const result = await Book.updateOne(
+      { _id: book._id, 'file.publicId': file.publicId },
+      { $set: Object.fromEntries(Object.entries(next).map(([key, value]) => [`file.${key}`, value])) },
+    );
+    if (!result.matchedCount) throw new Error('the book changed while its file was being moved; try again');
+    Object.assign(file, next);
   } catch (err) {
-    await Promise.allSettled(moved.map(({ from, to }) => renameAsset(to.publicId, from, 'raw')));
+    await Promise.allSettled(moved.map((m) => renameAsset(m.renamed.publicId, m.from, type)));
     throw err;
   }
-  file.parts = moved.map(({ to }, i) => ({ url: to.url, publicId: to.publicId, bytes: file.parts[i].bytes }));
-  file.url = moved[0].to.url;
-  file.publicId = publicId;
 }

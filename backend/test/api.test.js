@@ -32,6 +32,7 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
   const uploads = [];
   const destroyed = [];
   const renamed = [];
+  let renameFails = () => false;
 
   before(async () => {
     const { cloudinary } = await import('../src/config/cloudinary.js');
@@ -55,6 +56,7 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     });
     cloudinary.uploader.destroy = async (publicId) => destroyed.push(publicId);
     cloudinary.uploader.rename = async (from, to, options) => {
+      if (renameFails(from, to)) throw { error: { message: `Server error renaming ${from}` } };
       renamed.push({ from, to });
       return fakeResult({ public_id: to, resource_type: options.resource_type });
     };
@@ -1034,6 +1036,12 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
       const push = calls.find((c) => c.url.endsWith('/processrequest'));
       assert.equal(push.body.Amount, 200);
       assert.equal(push.body.TransactionDesc, 'A-Read book');
+      // Asking again (another phone, or after a reload) while that prompt is open picks it back up.
+      res = await api('/payments/stk', { token: erin, method: 'POST', body: { phone: '0712000009', bookId: book.id } });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.resumed, true);
+      assert.equal(res.body.payment.id, payment.id, 'no second charge');
+      assert.equal(calls.filter((c) => c.url.endsWith('/processrequest')).length, 1);
       assert.equal((await api(`/books/${book.id}/sections/2`, { token: erin })).status, 402, 'locked until M-Pesa confirms');
       await api('/payments/mpesa/callback/callback-secret', {
         method: 'POST',
@@ -1082,6 +1090,43 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal(res.body.book.unlocked, true);
     assert.equal((await api('/books?access=premium')).body.total, 0);
     assert.ok((await api('/admin/premium', { token: alice })).body.books.some((b) => b.id === book.id && !b.premium.enabled));
+
+    // While it was free, everyone was given the file and audiobook URLs, so turning premium back on
+    // moves them again, even though their names already look private.
+    const freeCopy = (await api(`/books/${book.id}`, { token: erin })).body.book;
+    let fresh = await Book.findById(book.id);
+    const handedOut = { file: fresh.file.publicId, audiobook: fresh.audiobook.publicId };
+    // A rename that fails part-way (here the audiobook) leaves the book free and consistent…
+    renameFails = (from) => from === handedOut.audiobook;
+    res = await premium({ enabled: true });
+    assert.equal(res.status, 502);
+    fresh = await Book.findById(book.id);
+    assert.equal(fresh.premium.enabled, false);
+    const movedFile = fresh.file.publicId;
+    assert.notEqual(movedFile, handedOut.file, 'the file move that succeeded is recorded');
+    assert.ok(renamed.some((r) => r.to === `${movedFile}.part0`), 'and the database matches where the file is now');
+    assert.equal(fresh.audiobook.publicId, handedOut.audiobook);
+    // …and trying again finishes the job.
+    renameFails = () => false;
+    res = await premium({ enabled: true });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    fresh = await Book.findById(book.id);
+    assert.notEqual(fresh.audiobook.publicId, handedOut.audiobook);
+    assert.match(fresh.audiobook.publicId, /audiobook-abc-[0-9a-f]{24}$/);
+    assert.notEqual(fresh.file.url, freeCopy.file.url, 'the URL handed out while free no longer works');
+    // Locking one more chapter moves only that chapter's narration (chapter 0's audio was public).
+    const chapterZero = (await Section.findOne({ book: book.id, index: 0 })).narration.publicId;
+    res = await premium({ lockedSections: [0, 2, 3], enabled: true });
+    assert.equal(res.status, 200);
+    assert.notEqual((await Section.findOne({ book: book.id, index: 0 })).narration.publicId, chapterZero);
+
+    // An older PDF whose cover is drawn from the PDF itself needs its own cover first.
+    await Book.updateOne({ _id: freeBook.id }, { $set: { coverSource: 'pdf' } });
+    res = await api(`/admin/books/${freeBook.id}/premium`, { token: alice, method: 'PUT', body: { enabled: true, price: 50, lockedSections: [0] } });
+    assert.equal(res.status, 409);
+    assert.match(res.body.error, /Upload a cover image/);
+    await Book.updateOne({ _id: freeBook.id }, { $set: { coverSource: 'none' } });
+    await premium({ enabled: false });
   });
 
   let sam;
@@ -1153,6 +1198,32 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal((await User.findOne({ email: 'sue@example.com' })).role, 'superadmin');
   });
 
+  test('closed sign-ups also stop accounts that were never confirmed', async () => {
+    const { setEmailSender } = await import('../src/services/email.js');
+    const emails = [];
+    setEmailSender(async (m) => emails.push(m));
+    try {
+      // Signed up while open, link not clicked yet.
+      assert.equal((await api('/auth/register', { method: 'POST', body: { name: 'Bot', email: 'bot@example.com', password: 'password0' } })).status, 201);
+      const link = new URL(emails.at(-1).text.match(/https?:\/\/\S+/)[0]).searchParams.get('token');
+      await api('/system/settings', { token: sam, method: 'PUT', body: { signupsOpen: false } });
+      let res = await api('/auth/register', { method: 'POST', body: { name: 'Bot', email: 'bot@example.com', password: 'password0' } });
+      assert.equal(res.status, 403);
+      const sent = emails.length;
+      assert.equal((await api('/auth/resend-verification', { method: 'POST', body: { email: 'bot@example.com' } })).status, 200);
+      assert.equal(emails.length, sent, 'no new link while sign-ups are closed');
+      assert.equal((await api('/auth/verify-email', { method: 'POST', body: { token: link } })).status, 403);
+      assert.equal((await api('/auth/google', { method: 'POST', body: { credential: 'g-7|bot@example.com|yes|padding-padding' } })).status, 403);
+      // Open again: the same link works.
+      await api('/system/settings', { token: sam, method: 'PUT', body: { signupsOpen: true } });
+      res = await api('/auth/verify-email', { method: 'POST', body: { token: link } });
+      assert.equal(res.status, 200);
+    } finally {
+      setEmailSender(null);
+      await api('/system/settings', { token: sam, method: 'PUT', body: { signupsOpen: true } });
+    }
+  });
+
   test('book quotes appear once each and never from the same book twice in a row', async () => {
     const { seedClassicQuotes } = await import('../src/services/quotes.js');
     const { CLASSIC_QUOTES } = await import('../src/data/classicQuotes.js');
@@ -1200,6 +1271,15 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     // A deleted classic can be brought back.
     await api(`/quotes/${shown[0].id}`, { token: alice, method: 'DELETE' });
     assert.equal((await api('/quotes/classics', { token: alice, method: 'POST' })).body.added, 1);
+    // A double click (two imports at once) still adds each missing quote only once.
+    const gone = (await api('/quotes', { token: alice })).body.quotes.slice(0, 3);
+    for (const q of gone) await api(`/quotes/${q.id}`, { token: alice, method: 'DELETE' });
+    const both = await Promise.all([1, 2].map(() => api('/quotes/classics', { token: alice, method: 'POST' })));
+    assert.equal(both[0].body.added + both[1].body.added, 3);
+    assert.equal((await api('/quotes', { token: alice })).body.quotes.length, CLASSIC_QUOTES.length);
+    res = await api('/quotes', { token: alice, method: 'POST', body: { text: CLASSIC_QUOTES[0].text, bookTitle: 'Somewhere else' } });
+    assert.equal(res.status, 409);
+    assert.match(res.body.error, /already in the list/);
 
     // A super admin can switch the popup off.
     await api('/system/settings', { token: sam, method: 'PUT', body: { quotesEnabled: false } });
@@ -1246,6 +1326,16 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
       assert.match(res.body.hub.last.error, /rejected ISA_HUB_API_KEY/);
       await api('/system/wake');
       assert.equal(hits, 2, 'a failed wake is retried after a pause, not on every open');
+
+      // While the Hub is asleep or briefly down, readers keep the payment form (the prompt itself
+      // reports an outage); a refused key means payments aren't set up.
+      const { clearHubConfig } = await import('../src/services/hub.js');
+      clearHubConfig();
+      answer = 503;
+      assert.equal((await api('/payments/config')).body.enabled, true);
+      clearHubConfig();
+      answer = 401;
+      assert.equal((await api('/payments/config')).body.enabled, false);
     } finally {
       Object.assign(env.hub, saved);
       resetHubWake();

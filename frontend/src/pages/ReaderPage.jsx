@@ -74,7 +74,10 @@ function Reader({ book, sections, saved, requestedSection, listen }) {
   });
   const positionRef = useLatest(position);
 
-  const [view, setView] = useState(() => (!hasPageView ? 'text' : !hasText ? 'page' : saved?.view || 'text'));
+  const [chosenView, setView] = useState(() => (!hasPageView ? 'text' : !hasText ? 'page' : saved?.view || 'text'));
+  // The page view comes and goes with the original file (a book made premium, or unlocked, while
+  // it's open), and a book without text only has the page view.
+  const view = chosenView === 'page' && !hasPageView ? 'text' : !hasText && hasPageView ? 'page' : chosenView;
   // Last EPUB page-view location and the section it belongs to.
   const [epubLoc, setEpubLoc] = useState(() => ({ cfi: saved?.epubCfi, section: saved?.sectionIndex }));
   const epubCfi = epubLoc.cfi;
@@ -88,6 +91,14 @@ function Reader({ book, sections, saved, requestedSection, listen }) {
   } = useSection(book.id, position.section, { locked: Boolean(sectionMeta?.locked) });
   // 402: locked since the chapter list was loaded (an admin changed the premium chapters).
   const sectionLocked = Boolean(sectionMeta?.locked) || sectionError?.status === 402;
+  const lockPrice = book.premium?.price ?? sectionError?.details?.price;
+
+  // Locked since this page loaded: fetch the book and its chapter list again to show its premium state.
+  useEffect(() => {
+    if (sectionError?.status !== 402 || sectionMeta?.locked) return;
+    queryClient.invalidateQueries({ queryKey: keys.book(book.id) });
+    queryClient.invalidateQueries({ queryKey: keys.sections(book.id) });
+  }, [sectionError, sectionMeta?.locked, book.id, queryClient]);
   const sentences = useMemo(() => section?.paragraphs.flat() ?? [], [section]);
 
   useEffect(() => {
@@ -207,6 +218,8 @@ function Reader({ book, sections, saved, requestedSection, listen }) {
       audiobookPlay();
       return;
     }
+    // A locked chapter has nothing to read aloud (its unlock box is on screen).
+    if (sectionLocked) return;
     const current = positionRef.current;
     if (!playable(current.section)) {
       advanceSection();
@@ -218,7 +231,7 @@ function Reader({ book, sections, saved, requestedSection, listen }) {
       return;
     }
     startAt(current.sentence);
-  }, [playing, waiting, mode, playable, section, stopAll, audiobookPlay, advanceSection, startAt, positionRef]);
+  }, [playing, waiting, mode, sectionLocked, playable, section, stopAll, audiobookPlay, advanceSection, startAt, positionRef]);
 
   // Moves the reading position; keeps audio going if it was playing.
   const jump = useCallback(
@@ -489,7 +502,7 @@ function Reader({ book, sections, saved, requestedSection, listen }) {
               onNext={() => jump({ sectionIndex: position.section + 1 })}
               emptyHint={book.format === 'pdf' ? 'This page has no text (it may be an image). Switch to Page view to see it.' : 'This part has no text.'}
               style={textStyle}
-              lockedContent={sectionLocked ? <LockedSection book={book} sections={sections} /> : null}
+              lockedContent={sectionLocked ? <LockedSection book={book} sections={sections} price={lockPrice} /> : null}
             />
           )}
           <Suspense
@@ -499,7 +512,7 @@ function Reader({ book, sections, saved, requestedSection, listen }) {
               </div>
             }
           >
-          {view === 'page' && book.format === 'pdf' && (
+          {view === 'page' && hasPageView && book.format === 'pdf' && (
             <PdfView
               file={book.file}
               pageNumber={position.section + 1}
@@ -510,7 +523,7 @@ function Reader({ book, sections, saved, requestedSection, listen }) {
               caption={caption}
             />
           )}
-          {view === 'page' && book.format === 'epub' && (
+          {view === 'page' && hasPageView && book.format === 'epub' && (
             <EpubView
               key={book.file.publicId}
               file={book.file}

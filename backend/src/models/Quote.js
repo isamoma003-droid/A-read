@@ -26,6 +26,9 @@ export const bookKeyOf = (title) =>
     .trim()
     .replace(/^(the|a|an) /, '');
 
+// The same quote can't be in the list twice (it would show twice per round).
+quoteSchema.index({ text: 1 }, { unique: true });
+
 quoteSchema.pre('validate', function setBookKey() {
   this.bookKey = bookKeyOf(this.bookTitle);
 });

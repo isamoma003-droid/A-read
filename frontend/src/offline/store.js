@@ -202,11 +202,19 @@ export function keepBookOffline(book, { audiobook = false } = {}) {
     writeIndex({ ...index, [book.id]: { ...saved, openedAt: new Date().toISOString() } });
     return Promise.resolve();
   }
-  if (inFlight.has(book.id)) return inFlight.get(book.id);
-  const job = saveBook(book, { includeAudiobook: audiobook || Boolean(saved?.hasAudiobook) })
+  const running = inFlight.get(book.id);
+  const unlocked = book.unlocked !== false;
+  if (running) {
+    // A save of the same version is already going. If the book changed meanwhile (edited, or the
+    // reader just paid for it), check again once that save is done.
+    if (running.updatedAt === book.updatedAt && running.unlocked === unlocked && (!audiobook || running.audiobook)) return running.job;
+    return running.job.then(() => keepBookOffline(book, { audiobook }));
+  }
+  const includeAudiobook = audiobook || Boolean(saved?.hasAudiobook);
+  const job = saveBook(book, { includeAudiobook })
     .catch(() => {})
     .finally(() => inFlight.delete(book.id));
-  inFlight.set(book.id, job);
+  inFlight.set(book.id, { job, updatedAt: book.updatedAt, unlocked, audiobook: includeAudiobook });
   return job;
 }
 

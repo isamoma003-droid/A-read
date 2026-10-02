@@ -12,7 +12,7 @@ import { Progress } from '../models/Progress.js';
 import { ROLES, User, isSuperAdmin } from '../models/User.js';
 import { deleteBook } from '../services/books.js';
 import { secureBookFiles } from '../services/premium.js';
-import { badRequest, forbidden, notFound } from '../utils/httpError.js';
+import { badRequest, conflict, forbidden, notFound } from '../utils/httpError.js';
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -160,10 +160,15 @@ router.put('/books/:id/premium', validate(premiumSchema), async (req, res) => {
   if (missing !== undefined) throw badRequest(`This book has ${book.sectionCount} parts, so part ${missing + 1} can't be locked`);
   if (enabled && !price) throw badRequest('Set the price readers pay to unlock this book');
   if (enabled && !locked.length) throw badRequest('Choose at least one chapter to lock');
+  // Older PDFs have a cover drawn from the PDF itself, and that image link can show any page.
+  if (enabled && book.coverSource === 'pdf') {
+    throw conflict("This book's cover is drawn from the PDF itself, which would show the locked pages. Upload a cover image first, then make it premium.");
+  }
 
+  const previous = book.premium?.toObject();
   book.premium = { enabled, price, lockedSections: locked, updatedBy: req.user._id, updatedAt: new Date() };
   await book.validate();
-  if (enabled) await secureBookFiles(book);
+  if (enabled) await secureBookFiles(book, previous);
   await book.save();
   res.json({ premium: premiumJson(book.premium) });
 });

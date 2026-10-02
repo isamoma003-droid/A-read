@@ -21,8 +21,8 @@ function play(quotes, { rounds = 3, seed = 1 } = {}) {
   let last = null;
   const picks = [];
   for (let i = 0; i < quotes.length * rounds; i++) {
-    const { quote, reset } = pickQuote(quotes, { seen, lastBook: last?.bookKey, random });
-    if (reset) seen = [];
+    const { quote, reset, keep } = pickQuote(quotes, { seen, lastBook: last?.bookKey, random });
+    if (reset) seen = keep;
     assert.ok(!seen.includes(quote._id), `${quote._id} repeated within a round`);
     picks.push(quote);
     seen.push(quote._id);
@@ -48,11 +48,22 @@ test('a book with many quotes is spread out instead of saved for the end', () =>
   }
 });
 
-test('a new round starts when only quotes from the last book are left', () => {
+test('when only the last book has quotes left, the others start over but its seen quotes stay seen', () => {
   const quotes = make({ a: 4, b: 1 });
-  const { quote, reset } = pickQuote(quotes, { seen: ['a0', 'b0', 'a1'], lastBook: 'a' });
+  const { quote, reset, keep } = pickQuote(quotes, { seen: ['a0', 'b0', 'a1'], lastBook: 'a' });
   assert.equal(reset, true);
   assert.equal(quote.bookKey, 'b');
+  assert.deepEqual(keep.sort(), ['a0', 'a1']);
+});
+
+test("a book with most of the quotes shows every one of them before any repeats", () => {
+  for (let seed = 1; seed <= 25; seed++) {
+    const picks = play(make({ a: 6, b: 2 }), { rounds: 2, seed });
+    const fromA = picks.filter((q) => q.bookKey === 'a').map((q) => q._id);
+    // a's quotes alternate with b's; all six of a's come up before any of them repeats.
+    assert.ok(fromA.length >= 6);
+    assert.equal(new Set(fromA.slice(0, 6)).size, 6, `seed ${seed}: ${fromA.join(',')}`);
+  }
 });
 
 test('with quotes from a single book, they still never repeat within a round', () => {
@@ -61,5 +72,5 @@ test('with quotes from a single book, they still never repeat within a round', (
 });
 
 test('no quotes, no pick', () => {
-  assert.deepEqual(pickQuote([], {}), { quote: null, reset: false });
+  assert.deepEqual(pickQuote([], {}), { quote: null, reset: false, keep: [] });
 });

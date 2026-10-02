@@ -7,7 +7,7 @@ import { Book } from '../models/Book.js';
 import { Quote } from '../models/Quote.js';
 import { importClassicQuotes, pickQuote } from '../services/quotes.js';
 import { getSettings } from '../services/settings.js';
-import { badRequest, notFound } from '../utils/httpError.js';
+import { badRequest, conflict, notFound } from '../utils/httpError.js';
 
 const router = Router();
 const objectId = z.string().regex(/^[a-f0-9]{24}$/i);
@@ -29,10 +29,10 @@ const nextSchema = z.object({
 
 // The quote to show now: one not seen yet, from a different book than the last one.
 router.post('/next', validate(nextSchema), async (req, res) => {
-  if (!(await getSettings()).quotesEnabled) return res.json({ quote: null, reset: false });
+  if (!(await getSettings()).quotesEnabled) return res.json({ quote: null, reset: false, keep: [] });
   const quotes = await Quote.find({ enabled: true }).select('text bookTitle author bookKey book').populate('book', 'title cover').lean();
-  const { quote, reset } = pickQuote(quotes, req.valid.body);
-  res.json({ quote: quote ? publicQuote(quote) : null, reset });
+  const { quote, reset, keep } = pickQuote(quotes, req.valid.body);
+  res.json({ quote: quote ? publicQuote(quote) : null, reset, keep });
 });
 
 // --- Admin ---------------------------------------------------------------------------------
@@ -71,7 +71,9 @@ async function apply(quote, { bookId, ...body }) {
   }
   for (const [key, value] of Object.entries(body)) if (value !== undefined) quote[key] = value;
   if (!quote.bookTitle) throw badRequest('Which book is it from? Pick a book or type its title.');
-  await quote.save();
+  await quote.save().catch((err) => {
+    throw err.code === 11000 ? conflict('That quote is already in the list') : err;
+  });
   await quote.populate('book', 'title cover');
   return { ...publicQuote(quote), enabled: quote.enabled, createdAt: quote.createdAt };
 }

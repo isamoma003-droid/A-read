@@ -43,14 +43,18 @@ router.get('/config', async (_req, res) => {
   const limits = { minAmount: c.minAmount, maxAmount: c.maxAmount };
   if (hubEnabled()) {
     let till = null;
+    let waking = false;
     try {
       ({ till } = await hubConfig());
     } catch (err) {
-      // Readers then see "not set up yet"; Admin → Payments shows the reason in plain words.
+      // A Hub that is asleep or briefly down still takes payments in a moment (the prompt itself
+      // reports an outage), so readers keep the payment form. A refused key or a missing Hub means
+      // "not set up yet"; Admin → Payments shows the reason in plain words.
+      waking = !err.status || err.status >= 500;
       console.warn(`ISA Tech Hub config unavailable (HTTP ${err.status ?? 'none'}): ${err.message}`);
     }
     return res.json({
-      enabled: Boolean(till?.active),
+      enabled: waking || Boolean(till?.active),
       method: till?.kind ?? null,
       number: till?.payNumber ?? null,
       accountReference: till?.accountNumber ?? null,
@@ -170,6 +174,20 @@ router.post('/stk', stkLimiter, optionalAuth, validate(stkSchema), async (req, r
     if (!book) throw notFound('Book not found');
     if (!isPremium(book)) throw badRequest('This book is free to read');
     if (!(await lockedSectionsFor(book, req.user)).size) throw conflict('You have already unlocked this book');
+    // A prompt for this book may still be open (the reader reloaded, or M-Pesa's answer is late):
+    // pick that payment up again instead of charging twice.
+    const waiting = await Payment.findOne({
+      user: req.user._id,
+      book: book._id,
+      status: 'pending',
+      createdAt: { $gt: new Date(Date.now() - GIVE_UP_MS) },
+    }).sort({ createdAt: -1 });
+    if (waiting) {
+      if (waiting.provider === 'hub') await refreshFromHub(waiting);
+      else await refreshFromDaraja(waiting);
+      if (waiting.status === 'paid') throw conflict('You have already unlocked this book');
+      if (waiting.status === 'pending') return res.json({ payment: publicPayment(waiting), resumed: true });
+    }
     amount = book.premium.price;
   } else if (amount === undefined) {
     throw badRequest('Enter an amount');

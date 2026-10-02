@@ -6,17 +6,42 @@ import { api } from '../api/client.js';
 import { keys, usePaymentConfig } from '../api/queries.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { formatKes } from '../utils/format.js';
-import { ErrorMessage } from './Feedback.jsx';
+import { ErrorMessage, Spinner } from './Feedback.jsx';
 import { PaymentStatus, savePhone, savedPhone } from './MpesaPayment.jsx';
 
+// The payment waiting for M-Pesa's answer, per reader and book, so a reload keeps following it.
+const pendingKey = (userId, bookId) => `a-read-unlock-${userId}-${bookId}`;
+function pendingPayment(userId, bookId) {
+  if (!userId) return null;
+  try {
+    return localStorage.getItem(pendingKey(userId, bookId));
+  } catch {
+    return null;
+  }
+}
+function rememberPayment(userId, bookId, paymentId) {
+  try {
+    if (paymentId) localStorage.setItem(pendingKey(userId, bookId), paymentId);
+    else localStorage.removeItem(pendingKey(userId, bookId));
+  } catch {
+    // ignore
+  }
+}
+
 // Pays a premium book's price by M-Pesa STK Push. Once M-Pesa confirms, the book, its chapter
-// list and its text are fetched again, now unlocked.
-export default function UnlockBook({ book }) {
+// list and its text are fetched again, now unlocked. `price` overrides the book's when the book
+// data is older than the lock (the server's 402 answer carries the price).
+export default function UnlockBook({ book, price: priceOverride }) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const { data: config } = usePaymentConfig();
   const [phone, setPhone] = useState(savedPhone);
-  const [paymentId, setPaymentId] = useState(null);
+  const [paymentId, setPaymentIdState] = useState(() => pendingPayment(user?.id, book.id));
+  const setPaymentId = (id) => {
+    rememberPayment(user?.id, book.id, id);
+    setPaymentIdState(id);
+  };
+  const price = priceOverride ?? book.premium?.price;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -29,6 +54,7 @@ export default function UnlockBook({ book }) {
   }
 
   const onPaid = () => {
+    rememberPayment(user?.id, book.id, null);
     queryClient.invalidateQueries({ queryKey: keys.book(book.id) });
     queryClient.invalidateQueries({ queryKey: keys.sections(book.id) });
     queryClient.invalidateQueries({ queryKey: ['section', book.id] });
@@ -49,12 +75,15 @@ export default function UnlockBook({ book }) {
   if (config && !config.enabled) {
     return <p className="notice">M-Pesa payments aren't set up yet, so this book can't be unlocked right now.</p>;
   }
+  if (!price) return <Spinner label="Checking the price…" />;
 
   const onSubmit = async (event) => {
     event.preventDefault();
     setBusy(true);
     setError(null);
     try {
+      // If a prompt for this book is still open, the server hands that payment back instead of
+      // sending another.
       const { payment } = await api('/payments/stk', { method: 'POST', body: { phone, bookId: book.id } });
       savePhone(phone);
       setPaymentId(payment.id);
@@ -75,7 +104,7 @@ export default function UnlockBook({ book }) {
       </label>
       <ErrorMessage error={error} />
       <button className="button button-primary" disabled={busy}>
-        <LockOpen size={16} aria-hidden="true" /> {busy ? 'Sending request…' : `Unlock for ${formatKes(book.premium.price)}`}
+        <LockOpen size={16} aria-hidden="true" /> {busy ? 'Sending request…' : `Unlock for ${formatKes(price)}`}
       </button>
       <p className="muted small">You'll get a prompt on your phone. Enter your M-Pesa PIN there to pay once and keep the whole book.</p>
     </form>

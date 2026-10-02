@@ -22,6 +22,10 @@ export async function updateSettings(changes, user) {
   return value;
 }
 
+export const clearSettingsCache = () => {
+  cache = null;
+};
+
 // What every visitor's app needs to know.
 export const publicSettings = (s) => ({
   signupsOpen: s.signupsOpen,

@@ -77,7 +77,8 @@ router.post('/register', authLimiter, validate(registerSchema), async (req, res)
   const { name, email: address, password } = req.valid.body;
   let user = await User.findOne({ email: address });
   if (user && user.isVerified()) throw conflict('An account with that email already exists. Log in instead.');
-  if (!user) await assertSignupsOpen(address);
+  // An unconfirmed account isn't a member yet, so closed sign-ups stop it too.
+  await assertSignupsOpen(address);
 
   // An unconfirmed sign-up can be repeated (e.g. after a typo in the password or a lost email).
   user ??= new User({ email: address, role: roleFor(address) });
@@ -102,8 +103,10 @@ router.post('/register', authLimiter, validate(registerSchema), async (req, res)
 
 router.post('/resend-verification', authLimiter, validate(z.object({ email })), async (req, res) => {
   const user = await User.findOne({ email: req.valid.body.email });
-  // Same answer whether or not the account exists, so this can't be used to probe emails.
-  if (user && !user.isVerified() && emailEnabled()) {
+  const allowed = user && (await assertSignupsOpen(user.email).then(() => true, () => false));
+  // Same answer whether or not the account exists (or sign-ups are closed), so this can't be used
+  // to probe emails.
+  if (allowed && !user.isVerified() && emailEnabled()) {
     await sendVerification(user).catch((err) => console.error('Could not resend confirmation email:', err.message));
   }
   res.json({ ok: true });
@@ -115,6 +118,8 @@ router.post('/verify-email', authLimiter, validate(z.object({ token: z.string().
     verifyTokenExpires: { $gt: new Date() },
   });
   if (!user) throw badRequest('This confirmation link is invalid or has expired. Request a new one from the sign-in page.');
+  // Links sent before sign-ups were closed stop working too.
+  await assertSignupsOpen(user.email);
   user.emailVerified = true;
   user.verifyTokenHash = undefined;
   user.verifyTokenExpires = undefined;
@@ -166,8 +171,9 @@ router.post('/google', authLimiter, validate(z.object({ credential: z.string().m
 
   const address = profile.email.toLowerCase();
   let user = (await User.findOne({ googleId: profile.sub })) || (await User.findOne({ email: address }));
+  // New accounts, and email sign-ups that were never confirmed, need sign-ups to be open.
+  if (!user || !user.isVerified()) await assertSignupsOpen(address);
   if (!user) {
-    await assertSignupsOpen(address);
     user = new User({ email: address, name: (profile.name || address.split('@')[0]).slice(0, 80), role: roleFor(address) });
   }
   // Google has confirmed the address, which also confirms an unverified email sign-up.

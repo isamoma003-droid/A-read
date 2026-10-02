@@ -64,7 +64,8 @@ export default function QuotePopup() {
   // Remembered once it's actually on screen, so it never comes up again this round.
   useEffect(() => {
     if (!visible) return;
-    const seen = next.reset ? [] : read('local', SEEN_KEY, []);
+    // A new round keeps only what the server says still counts as seen.
+    const seen = next.reset ? (next.keep ?? []) : read('local', SEEN_KEY, []);
     write('local', SEEN_KEY, [...seen.filter((id) => id !== next.quote.id), next.quote.id].slice(-5000));
     write('local', LAST_BOOK_KEY, next.quote.bookKey);
     write('session', SESSION_KEY, true);
