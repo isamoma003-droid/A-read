@@ -8,6 +8,7 @@ import { Assignment } from '../models/Assignment.js';
 import { Book } from '../models/Book.js';
 import { Bookmark } from '../models/Bookmark.js';
 import { Progress } from '../models/Progress.js';
+import { Review } from '../models/Review.js';
 import { Section, packParagraphs } from '../models/Section.js';
 import { badRequest } from '../utils/httpError.js';
 import { profileFromExtracted } from './categorize.js';
@@ -95,6 +96,7 @@ export async function createBook({ user, files, fields }) {
       wordCount: stats.wordCount,
       charCount: stats.charCount,
       uploadedBy: user._id,
+      uploadKey: fields.uploadKey,
     });
 
     await Section.insertMany(
@@ -157,6 +159,7 @@ export async function deleteBook(book) {
     Progress.deleteMany({ book: book._id }),
     Bookmark.deleteMany({ book: book._id }),
     Assignment.deleteMany({ book: book._id }),
+    Review.deleteMany({ book: book._id }),
   ]);
   await book.deleteOne();
   await deleteBookFolder(book._id);

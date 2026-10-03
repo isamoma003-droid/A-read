@@ -3,10 +3,13 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import Layout from './components/Layout.jsx';
 import ProtectedRoute from './components/ProtectedRoute.jsx';
 import AdminPage from './pages/AdminPage.jsx';
+import AuthorPage from './pages/AuthorPage.jsx';
+import AuthorsPage from './pages/AuthorsPage.jsx';
 import BookPage from './pages/BookPage.jsx';
 import LibraryPage from './pages/LibraryPage.jsx';
 import { LoginPage, RegisterPage, VerifyEmailPage } from './pages/AuthPages.jsx';
 import NotFoundPage from './pages/NotFoundPage.jsx';
+import PremiumPage from './pages/PremiumPage.jsx';
 import { PageLoader } from './components/Feedback.jsx';
 import RequiredPage from './pages/RequiredPage.jsx';
 import SupportPage from './pages/SupportPage.jsx';
@@ -25,8 +28,11 @@ export default function App() {
         {/* Public: anyone (and search engines) can browse the catalogue. */}
         <Route index element={<LibraryPage />} />
         <Route path="/books/:id" element={<BookPage />} />
+        <Route path="/authors" element={<AuthorsPage />} />
+        <Route path="/authors/:slug" element={<AuthorPage />} />
         <Route path="/library" element={<Navigate to="/" replace />} />
         <Route path="/support" element={<SupportPage />} />
+        <Route path="/premium" element={<PremiumPage />} />
         <Route element={<ProtectedRoute />}>
           <Route path="/upload" element={<UploadPage />} />
           <Route path="/required" element={<RequiredPage />} />

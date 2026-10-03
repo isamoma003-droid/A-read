@@ -1,4 +1,5 @@
 import mongoose from '../config/mongoose.js';
+import { splitAuthors } from '../utils/authors.js';
 import { isAdmin } from './User.js';
 
 const { Schema } = mongoose;
@@ -72,6 +73,11 @@ const bookSchema = new Schema(
   {
     title: { type: String, required: true, trim: true, maxlength: 300 },
     author: { type: String, trim: true, maxlength: 200, default: '' },
+    // The people in `author`, each with an author page (/authors/:slug). Kept in step with `author`.
+    authors: {
+      type: [new Schema({ name: String, slug: String }, { _id: false })],
+      default: [],
+    },
     description: { type: String, trim: true, maxlength: 5000, default: '' },
     language: { type: String, trim: true, maxlength: 20, default: '' },
     tags: { type: [String], default: [] },
@@ -82,6 +88,12 @@ const bookSchema = new Schema(
     // A summary of the book's words used to work out its category (services/categorize.js).
     textProfile: { type: Schema.Types.Mixed, select: false },
     premium: premiumSchema,
+    // Set by admins: the book sits on the home page's Featured shelf until then (for example as a
+    // paid placement for its author or publisher).
+    featuredUntil: Date,
+    // Readers' star ratings, kept up to date from their reviews (services/reviews.js). Absent until
+    // the first review.
+    rating: new Schema({ average: Number, count: Number, score: Number }, { _id: false }),
     format: { type: String, enum: ['pdf', 'epub', 'txt'], required: true },
     originalName: String,
     file: { type: assetSchema, required: true },
@@ -102,6 +114,9 @@ const bookSchema = new Schema(
     audiobook: audiobookSchema,
     narration: { type: narrationSchema, default: () => ({}) },
     uploadedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    // A random id the upload page gives each file. If the page reloads before the server answers,
+    // the upload is sent again with the same key and the book is only added once.
+    uploadKey: { type: String, select: false },
     // Lower-cased copies used for case-insensitive sorting.
     sortTitle: { type: String, select: false },
     sortAuthor: { type: String, select: false },
@@ -110,12 +125,18 @@ const bookSchema = new Schema(
 );
 
 bookSchema.index({ createdAt: -1 });
+bookSchema.index({ uploadedBy: 1, uploadKey: 1 }, { unique: true, partialFilterExpression: { uploadKey: { $type: 'string' } } });
 bookSchema.index({ sortTitle: 1 });
 bookSchema.index({ sortAuthor: 1, sortTitle: 1 });
+
+bookSchema.index({ 'authors.slug': 1 });
+bookSchema.index({ 'rating.score': -1, createdAt: -1 });
+bookSchema.index({ featuredUntil: -1 });
 
 bookSchema.pre('validate', function setSortKeys() {
   this.sortTitle = (this.title || '').toLowerCase().replace(/^(the|a|an)\s+/, '');
   this.sortAuthor = (this.author || '').toLowerCase();
+  if (this.isNew || this.isModified('author')) this.authors = splitAuthors(this.author);
 });
 bookSchema.index({ tags: 1 });
 

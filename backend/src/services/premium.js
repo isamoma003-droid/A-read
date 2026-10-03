@@ -4,14 +4,17 @@ import { Book } from '../models/Book.js';
 import { Payment } from '../models/Payment.js';
 import { Section } from '../models/Section.js';
 import { HttpError } from '../utils/httpError.js';
+import { hasActivePass } from './pass.js';
 import { bookFolder, hasPrivateName, privateSuffix, renameAsset } from './storage.js';
 
 export const isPremium = (book) => Boolean(book?.premium?.enabled && book.premium.lockedSections?.length);
 
-// Ids (as strings) of the given premium books this reader has paid for.
+// Ids (as strings) of the given premium books this reader has paid for. A Premium Pass opens all
+// of them while it lasts.
 export async function purchasedBookIds(user, books) {
   const premium = books.filter(isPremium);
   if (!user || !premium.length) return new Set();
+  if (await hasActivePass(user)) return new Set(premium.map((b) => String(b._id)));
   const ids = await Payment.distinct('book', { book: { $in: premium.map((b) => b._id) }, status: 'paid', user: user._id });
   return new Set(ids.map(String));
 }

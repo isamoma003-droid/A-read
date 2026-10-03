@@ -59,6 +59,10 @@ export const env = {
   emailFromName: process.env.EMAIL_FROM_NAME || 'A-Read',
   // OAuth client ID for "Sign in with Google" (Google Cloud console → Credentials).
   googleClientId: process.env.GOOGLE_CLIENT_ID || '',
+  // IndexNow key (8-128 letters, digits or dashes; make one up). When set, new and changed book and
+  // author pages are announced to Bing, Yandex and the other IndexNow search engines right away.
+  // Google doesn't take part: it reads the sitemap.
+  indexNowKey: /^[A-Za-z0-9-]{8,128}$/.test(process.env.INDEXNOW_KEY || '') ? process.env.INDEXNOW_KEY : '',
   // Daily popup hours are read in this time zone.
   timeZone: process.env.TIME_ZONE || 'Africa/Nairobi',
   // ISA Tech Hub: one M-Pesa till shared by all ISA platforms. When all three are set, new

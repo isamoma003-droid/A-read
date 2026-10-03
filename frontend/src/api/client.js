@@ -72,9 +72,10 @@ export async function api(path, { method = 'GET', body, signal, keepalive } = {}
   return parseResponse(res.status, await res.text());
 }
 
-// Multipart upload with progress (fetch can't report upload progress).
-export function upload(path, formData, { method = 'POST', onProgress } = {}) {
+// Multipart upload with progress (fetch can't report upload progress). `signal` cancels it.
+export function upload(path, formData, { method = 'POST', onProgress, signal } = {}) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException('Upload cancelled', 'AbortError'));
     const xhr = new XMLHttpRequest();
     xhr.open(method, `${API_URL}${path}`);
     for (const [key, value] of Object.entries(authHeaders())) xhr.setRequestHeader(key, value);
@@ -83,6 +84,8 @@ export function upload(path, formData, { method = 'POST', onProgress } = {}) {
     };
     xhr.onload = () => parseResponse(xhr.status, xhr.responseText).then(resolve, reject);
     xhr.onerror = () => reject(new ApiError(0, 'Upload failed. Check your connection and try again.'));
+    xhr.onabort = () => reject(new DOMException('Upload cancelled', 'AbortError'));
+    signal?.addEventListener('abort', () => xhr.abort(), { once: true });
     xhr.send(formData);
   });
 }

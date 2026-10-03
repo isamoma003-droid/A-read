@@ -30,6 +30,12 @@ export const keys = {
   systemStatus: ['admin', 'system'],
   adminQuotes: ['admin', 'quotes'],
   categoryStarters: ['admin', 'category-starters'],
+  reviews: (id) => ['reviews', id],
+  related: (id) => ['related', id],
+  pass: ['payments', 'pass'],
+  adminPass: ['admin', 'pass'],
+  authors: (params) => ['authors', 'list', params],
+  author: (slug) => ['authors', 'one', slug],
 };
 
 function toQuery(params) {
@@ -191,3 +197,45 @@ export const useAdminQuotes = () => useQuery({ queryKey: keys.adminQuotes, query
 // Common categories the library doesn't have yet (admins can add them in one click).
 export const useCategoryStarters = () =>
   useQuery({ queryKey: keys.categoryStarters, queryFn: () => api('/categories/starters').then((r) => r.starters) });
+
+// Everyone named as an author, a page at a time (public).
+export function useAuthors(params) {
+  return useInfiniteQuery({
+    queryKey: keys.authors(params),
+    queryFn: ({ pageParam, signal }) => api(`/authors${toQuery({ ...params, page: pageParam })}`, { signal }),
+    initialPageParam: 1,
+    getNextPageParam: (last) => (last.page < last.pages ? last.page + 1 : undefined),
+    placeholderData: (previous) => previous,
+  });
+}
+
+export const useAuthor = (slug) =>
+  useQuery({ queryKey: keys.author(slug), queryFn: () => api(`/authors/${encodeURIComponent(slug)}`).then((r) => r.author), enabled: Boolean(slug) });
+
+// A few authors whose names match a library search.
+export const useAuthorSearch = (q) =>
+  useQuery({
+    queryKey: ['authors', 'search', q],
+    queryFn: () => api(`/authors${toQuery({ q, sort: 'books', limit: 6 })}`).then((r) => r.authors),
+    enabled: Boolean(q),
+    staleTime: 60 * 1000,
+  });
+
+// A book's rating summary, the signed-in reader's own review, and reviews a page at a time.
+export function useReviews(id) {
+  return useInfiniteQuery({
+    queryKey: keys.reviews(id),
+    queryFn: ({ pageParam, signal }) => api(`/books/${id}/reviews${toQuery({ page: pageParam })}`, { signal }),
+    initialPageParam: 1,
+    getNextPageParam: (last) => (last.page < last.pages ? last.page + 1 : undefined),
+  });
+}
+
+// The Premium Pass: price, length, and until when the signed-in reader has it.
+export const usePass = (enabled = true) => useQuery({ queryKey: keys.pass, queryFn: () => api('/payments/pass'), enabled });
+
+export const useAdminPass = () => useQuery({ queryKey: keys.adminPass, queryFn: () => api('/admin/pass').then((r) => r.pass) });
+
+// More by the book's authors, and similar books, for its page.
+export const useRelated = (id) =>
+  useQuery({ queryKey: keys.related(id), queryFn: () => api(`/books/${id}/related`), enabled: Boolean(id), staleTime: 5 * 60 * 1000 });

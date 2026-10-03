@@ -1,35 +1,16 @@
 import { useState } from 'react';
-import { LockOpen } from 'lucide-react';
+import { Crown, LockOpen } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
-import { keys, usePaymentConfig } from '../api/queries.js';
+import { keys, usePaymentConfig, useSystemConfig } from '../api/queries.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { formatKes } from '../utils/format.js';
 import { ErrorMessage, Spinner } from './Feedback.jsx';
-import { PaymentStatus, savePhone, savedPhone } from './MpesaPayment.jsx';
+import { PaymentStatus, pendingPayment, rememberPayment, savePhone, savedPhone } from './MpesaPayment.jsx';
 
-// The payment waiting for M-Pesa's answer, per reader and book, so a reload keeps following it.
-// Like the server, it stops waiting after five minutes.
-const pendingKey = (userId, bookId) => `a-read-unlock-${userId}-${bookId}`;
-const WAIT_MS = 5 * 60 * 1000;
-function pendingPayment(userId, bookId) {
-  if (!userId) return null;
-  try {
-    const saved = JSON.parse(localStorage.getItem(pendingKey(userId, bookId)) || 'null');
-    return saved?.id && Date.now() - saved.at < WAIT_MS ? saved.id : null;
-  } catch {
-    return null;
-  }
-}
-function rememberPayment(userId, bookId, paymentId) {
-  try {
-    if (paymentId) localStorage.setItem(pendingKey(userId, bookId), JSON.stringify({ id: paymentId, at: Date.now() }));
-    else localStorage.removeItem(pendingKey(userId, bookId));
-  } catch {
-    // ignore
-  }
-}
+// The unlock payment waiting for M-Pesa's answer, per reader and book.
+const pendingKey = (userId, bookId) => (userId ? `a-read-unlock-${userId}-${bookId}` : null);
 
 // Pays a premium book's price by M-Pesa STK Push. Once M-Pesa confirms, the book, its chapter
 // list and its text are fetched again, now unlocked. `price` overrides the book's when the book
@@ -38,10 +19,11 @@ export default function UnlockBook({ book, price: priceOverride }) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const { data: config } = usePaymentConfig();
+  const { data: system } = useSystemConfig();
   const [phone, setPhone] = useState(savedPhone);
-  const [paymentId, setPaymentIdState] = useState(() => pendingPayment(user?.id, book.id));
+  const [paymentId, setPaymentIdState] = useState(() => pendingPayment(pendingKey(user?.id, book.id)));
   const setPaymentId = (id) => {
-    rememberPayment(user?.id, book.id, id);
+    rememberPayment(pendingKey(user?.id, book.id), id);
     setPaymentIdState(id);
   };
   const price = priceOverride ?? book.premium?.price;
@@ -57,7 +39,7 @@ export default function UnlockBook({ book, price: priceOverride }) {
   }
 
   const onPaid = () => {
-    rememberPayment(user?.id, book.id, null);
+    rememberPayment(pendingKey(user?.id, book.id), null);
     queryClient.invalidateQueries({ queryKey: keys.book(book.id) });
     queryClient.invalidateQueries({ queryKey: keys.sections(book.id) });
     queryClient.invalidateQueries({ queryKey: ['section', book.id] });
@@ -71,7 +53,7 @@ export default function UnlockBook({ book, price: priceOverride }) {
         onRetry={() => setPaymentId(null)}
         onClose={() => setPaymentId(null)}
         // Failed: a reload shows the form again. A disputed payment stays on screen (the money moved).
-        onSettled={(payment) => payment.status === 'failed' && rememberPayment(user?.id, book.id, null)}
+        onSettled={(payment) => payment.status === 'failed' && rememberPayment(pendingKey(user?.id, book.id), null)}
         onPaid={onPaid}
         paidTitle="Book unlocked"
         paidText="Every chapter is open now, on all your devices."
@@ -113,6 +95,12 @@ export default function UnlockBook({ book, price: priceOverride }) {
         <LockOpen size={16} aria-hidden="true" /> {busy ? 'Sending request…' : `Unlock for ${formatKes(price)}`}
       </button>
       <p className="muted small">You'll get a prompt on your phone. Enter your M-Pesa PIN there to pay once and keep the whole book.</p>
+      {system?.pass && (
+        <p className="pass-offer small">
+          <Crown size={14} aria-hidden="true" /> Or open <strong>every</strong> premium book for {system.pass.days} days with the{' '}
+          <Link to="/premium">Premium Pass</Link> ({formatKes(system.pass.price)}).
+        </p>
+      )}
     </form>
   );
 }

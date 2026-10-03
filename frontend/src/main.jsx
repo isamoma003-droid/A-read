@@ -7,6 +7,7 @@ import { API_URL } from './api/client.js';
 import { flushPendingProgress } from './offline/progressQueue.js';
 import { AuthProvider } from './context/AuthContext.jsx';
 import { SettingsProvider } from './context/SettingsContext.jsx';
+import { configureUploads } from './uploads/store.js';
 import './styles/global.css';
 
 const queryClient = new QueryClient({
@@ -21,6 +22,8 @@ const queryClient = new QueryClient({
     mutations: { networkMode: 'offlineFirst' },
   },
 });
+
+configureUploads({ queryClient });
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

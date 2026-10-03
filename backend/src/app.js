@@ -10,6 +10,7 @@ import { errorHandler, notFoundHandler } from './middleware/error.js';
 import adminRoutes from './routes/admin.js';
 import assignmentRoutes from './routes/assignments.js';
 import authRoutes from './routes/auth.js';
+import authorRoutes from './routes/authors.js';
 import bookmarkRoutes from './routes/bookmarks.js';
 import bookRoutes from './routes/books.js';
 import categoryRoutes from './routes/categories.js';
@@ -17,6 +18,7 @@ import paymentRoutes from './routes/payments.js';
 import progressRoutes from './routes/progress.js';
 import promotionRoutes from './routes/promotions.js';
 import quoteRoutes from './routes/quotes.js';
+import reviewRoutes from './routes/reviews.js';
 import seoRoutes from './routes/seo.js';
 import shareRoutes from './routes/share.js';
 import systemRoutes from './routes/system.js';
@@ -40,6 +42,8 @@ export function createApp() {
 
   app.get('/api/health', (_req, res) => res.json({ ok: true }));
   app.use('/api/auth', authRoutes);
+  app.use('/api/authors', authorRoutes);
+  app.use('/api/books/:id/reviews', reviewRoutes);
   app.use('/api/books', bookRoutes);
   app.use('/api/bookmarks', bookmarkRoutes);
   app.use('/api/categories', categoryRoutes);

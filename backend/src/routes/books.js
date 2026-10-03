@@ -20,6 +20,7 @@ import {
   replaceCover,
 } from '../services/books.js';
 import { buildClassifier } from '../services/categorize.js';
+import { announce, bookPages } from '../services/indexnow.js';
 import { deleteNarration, isNarrating, startNarration, stopNarration } from '../services/narration.js';
 import { isPremium, lockedError, lockedFor, lockedSectionsFor, purchasedBookIds } from '../services/premium.js';
 import { getSettings } from '../services/settings.js';
@@ -62,6 +63,7 @@ async function findEditableBook(req) {
 function present(book, user, progress, locked = lockedFor(book, user, new Set())) {
   const json = book.toJSON();
   delete json.textProfile;
+  delete json.uploadKey;
   if (!user || locked.size) {
     // Guests see the catalogue entry, not the downloadable files. Nor do readers who haven't
     // unlocked a premium book: its original file and audiobook include the locked chapters.
@@ -71,6 +73,8 @@ function present(book, user, progress, locked = lockedFor(book, user, new Set())
   return {
     ...json,
     category: json.category ?? null,
+    rating: book.rating?.count ? { average: book.rating.average, count: book.rating.count } : null,
+    featuredUntil: book.featuredUntil > new Date() ? book.featuredUntil : null,
     premium: isPremium(book) ? { price: book.premium.price, lockedSections: book.premium.lockedSections } : null,
     // false while any chapter is locked for this viewer.
     unlocked: locked.size === 0,
@@ -88,23 +92,35 @@ const listSchema = z.object({
   audio: z.enum(['any', 'narration', 'audiobook']).optional(),
   tag: z.string().trim().toLowerCase().max(50).optional(),
   category: z.string().trim().toLowerCase().max(60).optional(),
+  // An author page's slug (/authors/:slug).
+  author: z.string().trim().toLowerCase().max(60).optional(),
   access: z.enum(['free', 'premium']).optional(),
+  // Only books on the Featured shelf.
+  featured: z.stringbool().optional(),
   mine: z.stringbool().optional(),
-  sort: z.enum(['recent', 'title', 'author']).default('recent'),
+  sort: z.enum(['recent', 'title', 'author', 'rating']).default('recent'),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(60).default(24),
 });
 
-const SORTS = { recent: { createdAt: -1 }, title: { sortTitle: 1 }, author: { sortAuthor: 1, sortTitle: 1 } };
+// "rating": rated books first, best first (services/reviews.js explains the score).
+const SORTS = {
+  recent: { createdAt: -1 },
+  title: { sortTitle: 1 },
+  author: { sortAuthor: 1, sortTitle: 1 },
+  rating: { 'rating.score': -1, createdAt: -1 },
+};
 
 router.get('/', validate(listSchema, 'query'), async (req, res) => {
-  const { q, format, audio, tag, category, access, mine, sort, page, limit } = req.valid.query;
+  const { q, format, audio, tag, category, author, access, featured, mine, sort, page, limit } = req.valid.query;
   const and = [];
   if (q) {
     const pattern = new RegExp(escapeRegex(q), 'i');
     and.push({ $or: [{ title: pattern }, { author: pattern }, { tags: pattern }, { description: pattern }] });
   }
   if (format) and.push({ format });
+  if (author) and.push({ 'authors.slug': author });
+  if (featured) and.push({ featuredUntil: { $gt: new Date() } });
   if (tag) and.push({ tags: tag });
   if (category === 'none') and.push({ category: null });
   else if (category) {
@@ -157,7 +173,10 @@ router.get('/tags', async (_req, res) => {
 
 // --- Single book ------------------------------------------------------------------------------
 
+const uploadKey = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/, 'Invalid upload key');
+
 const createSchema = z.object({
+  uploadKey: uploadKey.optional(),
   title: z.string().trim().max(300).optional(),
   author: z.string().trim().max(200).optional(),
   description: z.string().trim().max(5000).optional(),
@@ -187,12 +206,45 @@ async function pickCategory(book) {
   }
 }
 
+const findUploads = (user, keys) =>
+  Book.find({ uploadedBy: user._id, uploadKey: { $in: keys } })
+    .select('+uploadKey')
+    .populate('uploadedBy', 'name')
+    .populate('category', 'name slug');
+
+const isDuplicateUpload = (err) => err?.code === 11000 && Boolean(err.keyPattern?.uploadKey);
+
 router.post('/', signedIn, mayUpload, uploadBook, validate(createSchema), async (req, res) => {
+  const { uploadKey: key } = req.valid.body;
+  // The same upload sent again (the page reloaded before our answer arrived): it's already in the
+  // library, so hand that book back instead of adding it twice.
+  const [already] = key ? await findUploads(req.user, [key]) : [];
+  if (already) return res.json({ book: present(already, req.user) });
+
   const fields = { ...req.valid.body, category: await checkCategory(req.valid.body.category) };
-  const book = await createBook({ user: req.user, files: req.files, fields });
+  let book;
+  try {
+    book = await createBook({ user: req.user, files: req.files, fields });
+  } catch (err) {
+    // Both copies arrived at once and the other one was saved first.
+    const [first] = isDuplicateUpload(err) ? await findUploads(req.user, [key]) : [];
+    if (!first) throw err;
+    return res.json({ book: present(first, req.user) });
+  }
   if (!book.category) await pickCategory(book);
   await book.populate([{ path: 'uploadedBy', select: 'name' }, { path: 'category', select: 'name slug' }]);
+  announce(bookPages(book));
   res.status(201).json({ book: present(book, req.user) });
+});
+
+// After a reload the upload page can't tell whether its last uploads reached the library; it asks
+// here (by upload key) before sending anything again.
+const uploadsSchema = z.object({ keys: z.string().max(4000) });
+
+router.get('/uploads', signedIn, validate(uploadsSchema, 'query'), async (req, res) => {
+  const keys = [...new Set(req.valid.query.keys.split(','))].filter((k) => uploadKey.safeParse(k).success).slice(0, 50);
+  const books = keys.length ? await findUploads(req.user, keys) : [];
+  res.json({ books: Object.fromEntries(books.map((book) => [book.uploadKey, present(book, req.user)])) });
 });
 
 router.get('/:id', async (req, res) => {
@@ -224,20 +276,25 @@ const updateSchema = z.object({
 router.patch('/:id', signedIn, validate(updateSchema), async (req, res) => {
   const book = await findEditableBook(req);
   const { tags, category, ...fields } = req.valid.body;
+  const before = bookPages(book);
   book.set(fields);
   if (tags !== undefined) book.tags = parseTags(tags);
   if (category !== undefined) {
     book.category = await checkCategory(category);
     book.categorySource = book.category ? 'manual' : undefined;
   }
+  const announced = book.isModified('title') || book.isModified('author') || book.isModified('description');
   await book.save();
   await book.populate('category', 'name slug');
+  // Authors who were dropped from the line lose a book too.
+  if (announced) announce([...new Set([...before, ...bookPages(book)])]);
   res.json({ book: present(book, req.user) });
 });
 
 router.delete('/:id', signedIn, async (req, res) => {
   const book = await findEditableBook(req);
   await deleteBook(book);
+  announce(bookPages(book));
   res.status(204).end();
 });
 
@@ -245,6 +302,52 @@ router.put('/:id/cover', signedIn, uploadCover, async (req, res) => {
   const book = await findEditableBook(req);
   await replaceCover(book, req.file);
   res.json({ book: present(book, req.user) });
+});
+
+// More by the same authors, and books like this one (same category or shared tags, best rated
+// first), for the book's page. Public, like the rest of the catalogue.
+router.get('/:id/related', async (req, res) => {
+  const book = await findBook(req.params.id);
+  const slugs = book.authors.map((a) => a.slug);
+  const byAuthor = slugs.length
+    ? await Book.find({ _id: { $ne: book._id }, 'authors.slug': { $in: slugs } })
+        .select('-toc -description')
+        .sort({ createdAt: -1 })
+        .limit(12)
+        .populate('category', 'name slug')
+    : [];
+
+  const like = [];
+  if (book.category) like.push({ category: book.category._id });
+  if (book.tags.length) like.push({ tags: { $in: [...book.tags] } });
+  let similar = [];
+  if (like.length) {
+    const rows = await Book.aggregate([
+      { $match: { _id: { $nin: [book._id, ...byAuthor.map((b) => b._id)] }, $or: like } },
+      {
+        $addFields: {
+          closeness: {
+            $add: [
+              { $size: { $setIntersection: [{ $ifNull: ['$tags', []] }, [...book.tags]] } },
+              book.category ? { $cond: [{ $eq: ['$category', book.category._id] }, 2, 0] } : 0,
+            ],
+          },
+        },
+      },
+      { $sort: { closeness: -1, 'rating.score': -1, createdAt: -1 } },
+      { $limit: 12 },
+      { $project: { _id: 1 } },
+    ]);
+    const found = await Book.find({ _id: { $in: rows.map((r) => r._id) } })
+      .select('-toc -description')
+      .populate('category', 'name slug');
+    const order = new Map(rows.map((r, i) => [String(r._id), i]));
+    similar = found.sort((a, b) => order.get(String(a._id)) - order.get(String(b._id)));
+  }
+
+  const purchased = await purchasedBookIds(req.user, [...byAuthor, ...similar]);
+  const show = (b) => present(b, req.user, null, lockedFor(b, req.user, purchased));
+  res.json({ byAuthor: byAuthor.map(show), similar: similar.map(show) });
 });
 
 // --- Text ------------------------------------------------------------------------------------

@@ -1,8 +1,9 @@
-import { Library, Search, Upload, X } from 'lucide-react';
+import { Feather, Library, Search, Sparkles, Upload, X } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { useBooks, useCategories, useContinueReading, useTags } from '../api/queries.js';
+import { useAuthorSearch, useBooks, useCategories, useContinueReading, useTags } from '../api/queries.js';
 import RequiredShelf from '../components/RequiredShelf.jsx';
+import { useCanonical } from '../utils/seo.js';
 import { useDocumentTitle } from '../utils/useDocumentTitle.js';
 import OfflineBooks from '../components/OfflineBooks.jsx';
 import { useOnline } from '../offline/useOnline.js';
@@ -29,6 +30,25 @@ const ACCESS = [
   ['premium', 'Premium'],
 ];
 
+// Books admins chose to show off on the home page.
+function Featured() {
+  const featured = useBooks({ featured: true, sort: 'recent', limit: 12 });
+  const list = featured.data?.pages[0]?.books ?? [];
+  if (!list.length) return null;
+  return (
+    <section className="continue">
+      <h2 className="section-title section-title-icon">
+        <Sparkles size={20} aria-hidden="true" /> Featured
+      </h2>
+      <div className="shelf">
+        {list.map((book) => (
+          <BookCard key={book.id} book={book} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function ContinueReading() {
   const { data: items } = useContinueReading(true);
   if (!items?.length) return null;
@@ -47,7 +67,6 @@ function ContinueReading() {
 export default function LibraryPage() {
   const { user } = useAuth();
   const online = useOnline();
-  useDocumentTitle(null);
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState(params.get('q') || '');
   const debouncedQuery = useDebounced(query.trim(), 350);
@@ -81,6 +100,10 @@ export default function LibraryPage() {
   const total = books.data?.pages[0]?.total ?? 0;
   const filtering = Boolean(filters.q || filters.format || filters.audio || filters.tag || filters.category || filters.access || filters.mine);
   const category = categories?.find((c) => c.slug === filters.category);
+  const { data: matchingAuthors } = useAuthorSearch(filters.q);
+  // A category's shelf is its own page for search engines; other filters aren't.
+  useDocumentTitle(category ? `${category.name} books` : null, category?.description || undefined);
+  useCanonical(category ? `/?category=${encodeURIComponent(category.slug)}` : '/');
 
   return (
     <div className="library">
@@ -117,6 +140,7 @@ export default function LibraryPage() {
           <p className="muted small">Your recently opened books work without a connection. The rest of the library comes back online.</p>
         </section>
       )}
+      {!filtering && online && <Featured />}
       {!filtering && user && <RequiredShelf />}
       {!filtering && user && <ContinueReading />}
 
@@ -174,6 +198,7 @@ export default function LibraryPage() {
             <option value="recent">Newest first</option>
             <option value="title">Title A–Z</option>
             <option value="author">Author A–Z</option>
+            <option value="rating">Top rated</option>
           </select>
           <label className="checkbox">
             <input type="checkbox" checked={filters.mine} onChange={(e) => setParam('mine', e.target.checked ? 'true' : '')} />
@@ -195,6 +220,18 @@ export default function LibraryPage() {
               </button>
             ))}
           </div>
+        )}
+
+        {filters.q && matchingAuthors?.length > 0 && (
+          <nav className="search-authors" aria-label="Matching authors">
+            <span className="muted small">Authors:</span>
+            {matchingAuthors.map((a) => (
+              <Link key={a.slug} to={`/authors/${encodeURIComponent(a.slug)}`} className="chip">
+                <Feather size={12} aria-hidden="true" /> {a.name}
+                <span className="chip-count">{a.books}</span>
+              </Link>
+            ))}
+          </nav>
         )}
 
         {books.isPending && (

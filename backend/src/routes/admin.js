@@ -9,9 +9,13 @@ import { Book } from '../models/Book.js';
 import { Bookmark } from '../models/Bookmark.js';
 import { Payment } from '../models/Payment.js';
 import { Progress } from '../models/Progress.js';
+import { Review } from '../models/Review.js';
 import { ROLES, User, isSuperAdmin } from '../models/User.js';
 import { deleteBook } from '../services/books.js';
+import { activePassHolders } from '../services/pass.js';
 import { secureBookFiles } from '../services/premium.js';
+import { refreshRating } from '../services/reviews.js';
+import { getSettings, updateSettings } from '../services/settings.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/httpError.js';
 
 const router = Router();
@@ -89,11 +93,14 @@ router.delete('/users/:id', async (req, res) => {
   if (req.query.deleteBooks === 'true') {
     for (const book of await Book.find({ uploadedBy: user._id })) await deleteBook(book);
   }
+  const reviewed = await Review.distinct('book', { user: user._id });
   await Promise.all([
     Progress.deleteMany({ user: user._id }),
     Bookmark.deleteMany({ user: user._id }),
+    Review.deleteMany({ user: user._id }),
     Assignment.updateMany({ users: user._id }, { $pull: { users: user._id } }),
   ]);
+  await Promise.all(reviewed.map((bookId) => refreshRating(bookId)));
   await user.deleteOne();
   res.status(204).end();
 });
@@ -138,14 +145,15 @@ router.get('/books/:id/premium', async (req, res) => {
   res.json({ premium: premiumJson(book.premium) });
 });
 
+const price = z
+  .number()
+  .int('Use a whole number of shillings')
+  .min(env.mpesa.minAmount, `The lowest price is KES ${env.mpesa.minAmount}`)
+  .max(env.mpesa.maxAmount, `The highest price is KES ${env.mpesa.maxAmount.toLocaleString('en-KE')}`);
+
 const premiumSchema = z.object({
   enabled: z.boolean(),
-  price: z
-    .number()
-    .int('Use a whole number of shillings')
-    .min(env.mpesa.minAmount, `The lowest price is KES ${env.mpesa.minAmount}`)
-    .max(env.mpesa.maxAmount, `The highest price is KES ${env.mpesa.maxAmount.toLocaleString('en-KE')}`)
-    .optional(),
+  price: price.optional(),
   // Section indexes (0-based) to lock until the reader pays.
   lockedSections: z.array(z.number().int().min(0)).max(50_000).optional(),
 });
@@ -174,3 +182,55 @@ router.put('/books/:id/premium', validate(premiumSchema), async (req, res) => {
 });
 
 export default router;
+
+// --- Featured shelf --------------------------------------------------------------------------
+
+const featureSchema = z.object({ days: z.number().int().min(0).max(366, 'Feature a book for at most a year') });
+
+// Puts a book on the home page's Featured shelf for `days` days from now (0 takes it off).
+router.put('/books/:id/featured', validate(featureSchema), async (req, res) => {
+  const { days } = req.valid.body;
+  const book = await Book.findByIdAndUpdate(
+    req.params.id,
+    days ? { $set: { featuredUntil: new Date(Date.now() + days * 24 * 60 * 60 * 1000) } } : { $unset: { featuredUntil: '' } },
+    { returnDocument: 'after', timestamps: false },
+  ).select('featuredUntil');
+  if (!book) throw notFound('Book not found');
+  res.json({ featuredUntil: book.featuredUntil ?? null });
+});
+
+// --- Premium Pass ----------------------------------------------------------------------------
+
+async function passJson(settings) {
+  const [[sales], holders] = await Promise.all([
+    Payment.aggregate([{ $match: { purpose: 'pass', status: 'paid' } }, { $group: { _id: null, amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
+    activePassHolders(),
+  ]);
+  return {
+    enabled: Boolean(settings.pass?.enabled),
+    price: settings.pass?.price ?? null,
+    days: settings.pass?.days ?? 30,
+    sales: { amount: sales?.amount ?? 0, count: sales?.count ?? 0 },
+    // Readers whose pass hasn't run out.
+    holders,
+  };
+}
+
+router.get('/pass', async (_req, res) => {
+  res.json({ pass: await passJson(await getSettings()) });
+});
+
+const passSchema = z.object({
+  enabled: z.boolean(),
+  price: price.optional(),
+  days: z.number().int('Use a whole number of days').min(1, 'A pass lasts at least a day').max(366, 'A pass lasts at most a year').optional(),
+});
+
+// Puts the Premium Pass on sale (or stops selling it). Passes already bought last their time either way.
+router.put('/pass', validate(passSchema), async (req, res) => {
+  const current = (await getSettings()).pass;
+  const { enabled, price: amount = current?.price, days = current?.days ?? 30 } = req.valid.body;
+  if (enabled && !amount) throw badRequest('Set the price of the Premium Pass');
+  const settings = await updateSettings({ pass: { enabled, price: amount, days } }, req.user);
+  res.json({ pass: await passJson(settings) });
+});

@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { useQueryClient } from '@tanstack/react-query';
 import { api, onUnauthorized, tokenStore } from '../api/client.js';
 import { clearOfflineBooks } from '../offline/store.js';
+import { clearUploads, restoreUploads } from '../uploads/store.js';
 
 const AuthContext = createContext(null);
 const USER_KEY = 'a-read-user';
@@ -64,6 +65,12 @@ export function AuthProvider({ children }) {
       .finally(() => setLoading(false));
   }, [logout, setUser]);
 
+  // Uploads saved on this device carry on once we know who is signed in (another account's are forgotten).
+  const userId = user?.id;
+  useEffect(() => {
+    if (userId) restoreUploads(userId);
+  }, [userId]);
+
   const startSession = useCallback((data) => {
     tokenStore.set(data.token);
     setUser(data.user);
@@ -82,9 +89,11 @@ export function AuthProvider({ children }) {
         ),
       loginWithGoogle: (credential) => api('/auth/google', { method: 'POST', body: { credential } }).then(startSession),
       verifyEmail: (token) => api('/auth/verify-email', { method: 'POST', body: { token } }).then(startSession),
-      // Explicit log out also forgets the books kept for offline reading on this device.
+      // Explicit log out also forgets the books kept for offline reading on this device, and
+      // stops and forgets any uploads.
       logout: () => {
         clearOfflineBooks();
+        clearUploads();
         logout();
       },
     }),
