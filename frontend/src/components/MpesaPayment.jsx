@@ -23,6 +23,29 @@ export function savePhone(phone) {
   }
 }
 
+// A payment still waiting for M-Pesa's answer, kept under `key` so a reload keeps following it.
+// Like the server, it stops waiting after five minutes.
+const WAIT_MS = 5 * 60 * 1000;
+export function pendingPayment(key) {
+  if (!key) return null;
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) || 'null');
+    return saved?.id && Date.now() - saved.at < WAIT_MS ? saved.id : null;
+  } catch {
+    return null;
+  }
+}
+
+export function rememberPayment(key, paymentId) {
+  if (!key) return;
+  try {
+    if (paymentId) localStorage.setItem(key, JSON.stringify({ id: paymentId, at: Date.now() }));
+    else localStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
+
 // Follows one STK Push payment until M-Pesa answers. `onPaid` runs once when it's paid, and
 // `onSettled` once when M-Pesa has answered either way. With `onClose`, the waiting and error
 // screens get a button back to the form (not the "checking" one: that money already moved).

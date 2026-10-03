@@ -1,100 +1,76 @@
-import { useRef, useState } from 'react';
-import { CheckCircle2, CircleAlert, FileText, ImagePlus, LoaderCircle, Plus, UploadCloud, X } from 'lucide-react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
+import { CheckCircle2, CircleAlert, FileText, ImagePlus, LoaderCircle, Plus, RotateCcw, UploadCloud, X } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
-import { upload } from '../api/client.js';
-import { keys, useCategories, useSystemConfig } from '../api/queries.js';
+import { useCategories, useSystemConfig } from '../api/queries.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { isAdmin } from '../utils/roles.js';
 import CategorySelect from '../components/CategorySelect.jsx';
 import FileDrop from '../components/FileDrop.jsx';
 import { ErrorMessage, ProgressBar } from '../components/Feedback.jsx';
 import { formatBytes } from '../utils/format.js';
-import { pdfCoverFromFile } from '../utils/pdfCover.js';
+import { useDocumentTitle } from '../utils/useDocumentTitle.js';
+import {
+  ACTIVE,
+  BOOK_TYPES,
+  MAX_FILES,
+  MAX_MB,
+  addFiles,
+  clearFinished,
+  markSeen,
+  removeItem,
+  setCover,
+  startUploads,
+  updateDraft,
+  useUploads,
+} from '../uploads/store.js';
 
-const BOOK_TYPES = '.pdf,.epub,.txt,application/pdf,application/epub+zip,text/plain';
-const MAX_MB = Number(import.meta.env.VITE_MAX_BOOK_MB || 100);
-const MAX_FILES = 20;
-const extension = (name) => name.slice(name.lastIndexOf('.')).toLowerCase();
-
-let nextId = 0;
+function statusText(item) {
+  return {
+    queued: item.interrupted ? 'Waiting to carry on' : 'Ready to upload',
+    preparing: 'Making a cover…',
+    uploading: `Uploading ${Math.round(item.progress * 100)}%`,
+    processing: 'Extracting text and chapters…',
+    done: 'Added to the library',
+    error: item.error,
+    missing: 'Choose this file again to carry on (the browser could not keep it)',
+  }[item.status];
+}
 
 export default function UploadPage() {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const input = useRef(null);
-  const [items, setItems] = useState([]);
-  const [cover, setCover] = useState(null);
   const [over, setOver] = useState(false);
   const [error, setError] = useState(null);
-  const [running, setRunning] = useState(false);
+  const { items, draft, cover, running, elsewhere, restored, batch, lastBatch } = useUploads();
   const { data: categories } = useCategories();
   const { user } = useAuth();
   const { data: system } = useSystemConfig();
+  useDocumentTitle('Upload books');
+
+  // A single book that finishes while this page is open opens straight away.
+  const batchAtOpen = useRef(batch);
+  useEffect(() => {
+    markSeen();
+    if (batch === batchAtOpen.current) return;
+    batchAtOpen.current = batch;
+    if (lastBatch?.single && lastBatch.books.length === 1) navigate(`/books/${lastBatch.books[0]}`);
+  }, [batch, lastBatch, navigate]);
 
   const single = items.length === 1;
   const finished = items.length > 0 && items.every((i) => i.status === 'done');
-  const patch = (id, change) => setItems((list) => list.map((i) => (i.id === id ? { ...i, ...change } : i)));
+  const waiting = items.filter((i) => i.status === 'queued' || i.status === 'error');
+  const missing = items.filter((i) => i.status === 'missing').length;
 
-  const addFiles = (fileList) => {
+  const add = (fileList) => {
     setError(null);
-    const accepted = [];
-    const rejected = [];
-    for (const file of fileList) {
-      if (!['.pdf', '.epub', '.txt'].includes(extension(file.name))) rejected.push(`${file.name} (not PDF/EPUB/TXT)`);
-      else if (file.size > MAX_MB * 1024 * 1024) rejected.push(`${file.name} (over ${MAX_MB} MB)`);
-      else accepted.push({ id: ++nextId, file, status: 'queued', progress: 0 });
-    }
-    setItems((list) => {
-      const fresh = list.filter((i) => i.status !== 'done');
-      return [...fresh, ...accepted].slice(0, MAX_FILES);
-    });
+    const rejected = addFiles(fileList);
     if (rejected.length) setError(new Error(`Skipped: ${rejected.join(', ')}`));
   };
 
-  const onSubmit = async (event) => {
+  const onSubmit = (event) => {
     event.preventDefault();
-    const queue = items.filter((i) => i.status === 'queued' || i.status === 'error');
-    if (!queue.length) return;
-    const shared = new FormData(event.currentTarget);
-    setRunning(true);
     setError(null);
-    const created = [];
-
-    for (const item of queue) {
-      const form = new FormData();
-      for (const key of ['tags', 'language', 'description', 'category']) {
-        if (shared.get(key)) form.append(key, shared.get(key));
-      }
-      if (single) {
-        for (const key of ['title', 'author']) if (shared.get(key)) form.append(key, shared.get(key));
-      }
-      form.append('file', item.file);
-      let coverFile = single ? cover : null;
-      if (!coverFile && extension(item.file.name) === '.pdf') {
-        patch(item.id, { status: 'preparing' });
-        coverFile = await pdfCoverFromFile(item.file);
-      }
-      if (coverFile) form.append('cover', coverFile);
-
-      patch(item.id, { status: 'uploading', progress: 0, error: null });
-      try {
-        const { book } = await upload('/books', form, {
-          onProgress: (p) => patch(item.id, { progress: p, status: p >= 1 ? 'processing' : 'uploading' }),
-        });
-        queryClient.setQueryData(keys.book(book.id), book);
-        patch(item.id, { status: 'done', book });
-        created.push(book);
-      } catch (err) {
-        patch(item.id, { status: 'error', error: err.message });
-      }
-    }
-
-    setRunning(false);
-    queryClient.invalidateQueries({ queryKey: ['books'] });
-    queryClient.invalidateQueries({ queryKey: keys.tags });
-    queryClient.invalidateQueries({ queryKey: keys.categories });
-    if (single && created.length === 1) navigate(`/books/${created[0].id}`);
+    startUploads();
   };
 
   if (system?.uploads === 'admins' && !isAdmin(user)) {
@@ -109,6 +85,8 @@ export default function UploadPage() {
     );
   }
 
+  const field = (name) => ({ name, value: draft[name], onChange: (e) => updateDraft({ [name]: e.target.value }) });
+
   return (
     <div className="narrow">
       <header className="page-header">
@@ -117,7 +95,25 @@ export default function UploadPage() {
           PDF, EPUB or TXT, up to {MAX_MB} MB each, and up to {MAX_FILES} at a time. A-Read pulls out the text so every book can be
           read on screen and read aloud. Everyone in the library can see your uploads.
         </p>
+        <p className="muted small">
+          You can keep browsing while books upload. If the page reloads or you close it, your uploads carry on from where they
+          stopped next time you open A-Read.
+        </p>
       </header>
+
+      {elsewhere && <p className="notice">These uploads are running in another A-Read tab or window. Check that one for progress.</p>}
+      {restored && !elsewhere && (
+        <p className="notice">
+          <RotateCcw size={16} aria-hidden="true" /> We kept your uploads when the page closed.{' '}
+          {running ? 'They are carrying on now.' : waiting.length ? 'Press Upload to carry on.' : ''}
+        </p>
+      )}
+      {missing > 0 && (
+        <p className="notice">
+          {missing === 1 ? 'One file' : `${missing} files`} could not be kept by your browser while the page was closed. Drop{' '}
+          {missing === 1 ? 'it' : 'them'} here again to carry on; nothing else needs redoing.
+        </p>
+      )}
 
       <form className="form upload-form" onSubmit={onSubmit}>
         <div
@@ -130,7 +126,7 @@ export default function UploadPage() {
           onDrop={(e) => {
             e.preventDefault();
             setOver(false);
-            if (!running) addFiles(e.dataTransfer.files);
+            if (!running) add(e.dataTransfer.files);
           }}
         >
           <input
@@ -140,7 +136,7 @@ export default function UploadPage() {
             multiple
             hidden
             onChange={(e) => {
-              addFiles(e.target.files);
+              add(e.target.files);
               e.target.value = '';
             }}
           />
@@ -160,9 +156,9 @@ export default function UploadPage() {
                 <span className="upload-item-icon">
                   {item.status === 'done' ? (
                     <CheckCircle2 size={20} />
-                  ) : item.status === 'error' ? (
+                  ) : item.status === 'error' || item.status === 'missing' ? (
                     <CircleAlert size={20} />
-                  ) : ['uploading', 'processing', 'preparing'].includes(item.status) ? (
+                  ) : ACTIVE.includes(item.status) ? (
                     <LoaderCircle size={20} className="spin" />
                   ) : (
                     <FileText size={20} />
@@ -170,32 +166,24 @@ export default function UploadPage() {
                 </span>
                 <div className="upload-item-body">
                   <div className="upload-item-name">
-                    {item.book ? <Link to={`/books/${item.book.id}`}>{item.book.title}</Link> : item.file.name}
+                    {item.book ? <Link to={`/books/${item.book.id}`}>{item.book.title}</Link> : item.name}
                   </div>
                   <div className="muted small">
-                    {formatBytes(item.file.size)} ·{' '}
-                    {
-                      {
-                        queued: 'Ready to upload',
-                        preparing: 'Making a cover…',
-                        uploading: `Uploading ${Math.round(item.progress * 100)}%`,
-                        processing: 'Extracting text and chapters…',
-                        done: 'Added to the library',
-                        error: item.error,
-                      }[item.status]
-                    }
+                    {formatBytes(item.size)} · {statusText(item)}
                   </div>
-                  {item.status === 'uploading' && <ProgressBar value={item.progress * 100} label={`Uploading ${item.file.name}`} />}
+                  {item.status === 'uploading' && <ProgressBar value={item.progress * 100} label={`Uploading ${item.name}`} />}
                 </div>
-                {!running && item.status !== 'done' && (
+                {item.status !== 'done' && item.status !== 'processing' && (
                   <button
                     type="button"
                     className="icon-button"
-                    title="Remove"
-                    onClick={() => setItems((list) => list.filter((i) => i.id !== item.id))}
+                    title={ACTIVE.includes(item.status) ? 'Cancel this upload' : 'Remove'}
+                    onClick={() => removeItem(item.id)}
                   >
                     <X size={16} />
-                    <span className="sr-only">Remove {item.file.name}</span>
+                    <span className="sr-only">
+                      {ACTIVE.includes(item.status) ? 'Cancel' : 'Remove'} {item.name}
+                    </span>
                   </button>
                 )}
               </li>
@@ -209,11 +197,11 @@ export default function UploadPage() {
             <div className="form-grid">
               <label className="field">
                 <span>Title</span>
-                <input name="title" maxLength={300} placeholder="Taken from the file if left empty" />
+                <input {...field('title')} maxLength={300} placeholder="Taken from the file if left empty" />
               </label>
               <label className="field">
                 <span>Author</span>
-                <input name="author" maxLength={200} placeholder="Taken from the file if left empty" />
+                <input {...field('author')} maxLength={200} placeholder="Taken from the file if left empty" />
               </label>
             </div>
           ) : (
@@ -223,24 +211,29 @@ export default function UploadPage() {
             {categories?.length > 0 && (
               <label className="field">
                 <span>Category</span>
-                <CategorySelect categories={categories} emptyLabel="Choose automatically" />
+                <CategorySelect
+                  categories={categories}
+                  emptyLabel="Choose automatically"
+                  value={draft.category}
+                  onChange={(category) => updateDraft({ category })}
+                />
                 <small className="muted">Left on automatic, A-Read picks one from the book when it&apos;s confident.</small>
               </label>
             )}
             <label className="field">
               <span>Tags</span>
-              <input name="tags" maxLength={500} placeholder="fiction, classic, history" />
+              <input {...field('tags')} maxLength={500} placeholder="fiction, classic, history" />
             </label>
             <label className="field">
               <span>Language</span>
-              <input name="language" maxLength={20} placeholder="e.g. en, fr, sw" />
+              <input {...field('language')} maxLength={20} placeholder="e.g. en, fr, sw" />
             </label>
           </div>
           {single && (
             <>
               <label className="field">
                 <span>Description</span>
-                <textarea name="description" rows={3} maxLength={5000} placeholder="Optional" />
+                <textarea {...field('description')} rows={3} maxLength={5000} placeholder="Optional" />
               </label>
               <div className="field">
                 <span>Cover image (optional)</span>
@@ -265,13 +258,13 @@ export default function UploadPage() {
               <Link to="/" className="button button-primary">
                 Go to the library
               </Link>
-              <button type="button" className="button" onClick={() => setItems([])}>
+              <button type="button" className="button" onClick={clearFinished}>
                 <Plus size={16} aria-hidden="true" /> Upload more
               </button>
             </>
           ) : (
-            <button className="button button-primary" disabled={running || !items.some((i) => i.status === 'queued' || i.status === 'error')}>
-              {running ? 'Uploading…' : items.length > 1 ? `Upload ${items.filter((i) => i.status !== 'done').length} books` : 'Upload book'}
+            <button className="button button-primary" disabled={running || !waiting.length}>
+              {running ? 'Uploading…' : waiting.length > 1 ? `Upload ${waiting.length} books` : 'Upload book'}
             </button>
           )}
         </div>

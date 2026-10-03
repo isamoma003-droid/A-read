@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BookOpen, Heart, ListChecks, LogOut, Megaphone, Moon, Shield, Sun, Upload, X } from 'lucide-react';
+import { BookOpen, Crown, Feather, Heart, ListChecks, LogOut, Megaphone, Moon, Shield, Sun, Upload, X } from 'lucide-react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useSystemConfig } from '../api/queries.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -9,6 +9,7 @@ import InstallButton from './InstallButton.jsx';
 import OfflineBanner from './OfflineBanner.jsx';
 import PromotionPopup from './PromotionPopup.jsx';
 import QuotePopup from './QuotePopup.jsx';
+import UploadDock from './UploadDock.jsx';
 
 const THEME_ORDER = ['light', 'sepia', 'dark'];
 
@@ -74,6 +75,14 @@ export default function Layout() {
             <NavLink to="/" end className="nav-library">
               Library
             </NavLink>
+            <NavLink to="/authors" title="Authors">
+              <Feather size={16} aria-hidden="true" /> <span className="hide-mobile">Authors</span>
+            </NavLink>
+            {system?.pass && (
+              <NavLink to="/premium" title="Premium Pass">
+                <Crown size={16} aria-hidden="true" /> <span className="hide-mobile">Premium</span>
+              </NavLink>
+            )}
             <NavLink to="/support" title="Support A-Read">
               <Heart size={16} aria-hidden="true" /> <span className="hide-mobile">Support</span>
             </NavLink>
@@ -122,6 +131,7 @@ export default function Layout() {
       <main className="page">
         <Outlet />
       </main>
+      <UploadDock />
       <QuotePopup />
       <PromotionPopup />
     </div>

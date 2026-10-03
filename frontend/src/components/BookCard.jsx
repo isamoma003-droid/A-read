@@ -1,4 +1,4 @@
-import { BookOpen, Crown, Headphones } from 'lucide-react';
+import { BookOpen, Crown, Headphones, Star } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { FORMAT_LABELS, formatKes } from '../utils/format.js';
 import BookCover from './BookCover.jsx';
@@ -35,6 +35,12 @@ export default function BookCard({ book, percent }) {
         <div className="book-card-meta">
           <span className="badge">{FORMAT_LABELS[book.format]}</span>
           {book.premium && !book.unlocked && <span className="badge badge-premium">{formatKes(book.premium.price)}</span>}
+          {book.rating && (
+            <span className="card-rating" title={`${book.rating.average} out of 5 from ${book.rating.count} rating${book.rating.count === 1 ? '' : 's'}`}>
+              <Star size={12} fill="currentColor" aria-hidden="true" /> {book.rating.average.toFixed(1)}
+              <span className="sr-only"> out of 5</span>
+            </span>
+          )}
           {progress > 0 && <span className="muted small">{Math.round(progress)}%</span>}
         </div>
         {progress > 0 && <ProgressBar value={progress} label={`${Math.round(progress)}% read`} />}

@@ -22,10 +22,14 @@ export async function updateSettings(changes, user) {
   return value;
 }
 
+// The Premium Pass, when it's on sale (null otherwise).
+export const passOnSale = (s) => (s.pass?.enabled && s.pass.price ? { price: s.pass.price, days: s.pass.days } : null);
+
 // What every visitor's app needs to know.
 export const publicSettings = (s) => ({
   signupsOpen: s.signupsOpen,
   uploads: s.uploads,
   quotesEnabled: s.quotesEnabled,
   announcement: s.announcement,
+  pass: passOnSale(s),
 });

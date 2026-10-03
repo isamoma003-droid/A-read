@@ -2,7 +2,9 @@
   "rewrites": [
     { "source": "/share/books/:id", "destination": "/api/share?id=:id" },
     { "source": "/sitemap.xml", "destination": "/api/sitemap" },
+    { "source": "/sitemaps/:file", "destination": "/api/sitemap?file=:file" },
     { "source": "/robots.txt", "destination": "/api/robots" },
+    { "source": "/indexnow-key.txt", "destination": "/api/indexnow" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "headers": [

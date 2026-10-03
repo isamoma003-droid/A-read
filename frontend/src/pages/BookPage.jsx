@@ -23,19 +23,26 @@ import {
   useBookMutation,
   useCategories,
   useNarrationStatus,
+  usePass,
   useSections,
   useTtsStatus,
   useVoices,
 } from '../api/queries.js';
+import AuthorLinks from '../components/AuthorLinks.jsx';
 import BookCover from '../components/BookCover.jsx';
 import CategorySelect from '../components/CategorySelect.jsx';
 import UnlockBook from '../components/UnlockBook.jsx';
+import FeatureControl from '../components/FeatureControl.jsx';
+import RelatedBooks from '../components/RelatedBooks.jsx';
+import ReviewsPanel from '../components/ReviewsPanel.jsx';
 import ShareButton from '../components/ShareButton.jsx';
+import { Stars } from '../components/Stars.jsx';
 import FileDrop from '../components/FileDrop.jsx';
 import { ErrorMessage, PageLoader, ProgressBar, Spinner } from '../components/Feedback.jsx';
 import NotFoundPage from './NotFoundPage.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { isAdmin } from '../utils/roles.js';
+import { siteUrl, useCanonical, useJsonLd } from '../utils/seo.js';
 import { useDocumentTitle } from '../utils/useDocumentTitle.js';
 import {
   FORMAT_LABELS,
@@ -58,6 +65,8 @@ export default function BookPage() {
     book ? `${book.title}${book.author ? ` by ${book.author}` : ''}` : null,
     book ? (book.description || `Read or listen to ${book.title} on A-Read.`).slice(0, 160) : undefined,
   );
+  useCanonical(`/books/${id}`);
+  useJsonLd(book && bookJsonLd(book));
 
   if (isPending) return <PageLoader label="Loading book…" />;
   if (error?.status === 404 || error?.status === 400) return <NotFoundPage />;
@@ -94,7 +103,20 @@ export default function BookPage() {
             )}
           </div>
           <h1 className="book-title">{book.title}</h1>
-          {book.author && <p className="book-author">by {book.author}</p>}
+          {book.author && (
+            <p className="book-author">
+              by <AuthorLinks book={book} />
+            </p>
+          )}
+          {book.rating && (
+            <a href="#reviews" className="book-rating">
+              <Stars value={book.rating.average} size={16} />
+              <strong>{book.rating.average.toFixed(1)}</strong>
+              <span className="muted">
+                ({book.rating.count} rating{book.rating.count === 1 ? '' : 's'})
+              </span>
+            </a>
+          )}
           <p className="muted book-stats">
             {formatNumber(book.wordCount)} words · {formatHours(readingMinutes(book.wordCount))} to read ·{' '}
             {formatHours(listeningMinutes(book.wordCount))} to listen
@@ -154,6 +176,7 @@ export default function BookPage() {
               </Link>
             )}
           </div>
+          {isAdmin(user) && <FeatureControl book={book} />}
           {noText && (
             <p className="notice">
               No text could be extracted from this book (scanned PDFs are images of pages). You can still read it in page
@@ -196,12 +219,44 @@ export default function BookPage() {
           )}
         </div>
       </div>
+
+      <ReviewsPanel book={book} />
+      <RelatedBooks book={book} />
     </div>
   );
 }
 
+// schema.org description of the book for search engines: its authors (linking to their pages),
+// cover, category, price when premium, and readers' rating.
+function bookJsonLd(book) {
+  const url = siteUrl(`/books/${book.id}`);
+  const authors = book.authors?.length
+    ? book.authors.map((a) => ({ '@type': 'Person', name: a.name, url: siteUrl(`/authors/${a.slug}`) }))
+    : book.author
+      ? [{ '@type': 'Person', name: book.author }]
+      : [];
+  return {
+    '@type': 'Book',
+    '@id': url,
+    url,
+    name: book.title,
+    ...(authors.length ? { author: authors.length === 1 ? authors[0] : authors } : {}),
+    ...(book.description ? { description: book.description.slice(0, 500) } : {}),
+    ...(book.cover?.url ? { image: book.cover.url } : {}),
+    ...(book.language ? { inLanguage: book.language } : {}),
+    ...(book.category ? { genre: book.category.name } : {}),
+    ...(book.tags?.length ? { keywords: book.tags.join(', ') } : {}),
+    ...(book.format === 'pdf' && book.sectionCount ? { numberOfPages: book.sectionCount } : {}),
+    bookFormat: 'https://schema.org/EBook',
+    isAccessibleForFree: !book.premium,
+    ...(book.premium ? { offers: { '@type': 'Offer', price: book.premium.price, priceCurrency: 'KES', url, availability: 'https://schema.org/InStock' } } : {}),
+    ...(book.rating?.count ? { aggregateRating: { '@type': 'AggregateRating', ratingValue: book.rating.average, ratingCount: book.rating.count, bestRating: 5, worstRating: 1 } } : {}),
+  };
+}
+
 function PremiumPanel({ book }) {
   const { user } = useAuth();
+  const { data: pass } = usePass(Boolean(user) && book.unlocked && !book.canEdit);
   const locked = book.premium.lockedSections.length;
   const free = book.sectionCount - locked;
   const parts = (n) => `${formatNumber(n)} ${partName(book.format, n)}`;
@@ -215,7 +270,9 @@ function PremiumPanel({ book }) {
           <LockOpen size={16} aria-hidden="true" />
           {book.canEdit
             ? `Readers pay ${formatKes(book.premium.price)} to open ${parts(locked)}. You can read everything because you ${isAdmin(user) ? 'are an admin' : 'uploaded it'}.`
-            : 'You unlocked this book. Every chapter is yours to read and listen to.'}
+            : pass?.active
+              ? `Your Premium Pass opens every chapter until ${new Date(pass.activeUntil).toLocaleDateString()}.`
+              : 'You unlocked this book. Every chapter is yours to read and listen to.'}
         </p>
       ) : (
         <>

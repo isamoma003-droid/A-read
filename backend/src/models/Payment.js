@@ -3,7 +3,8 @@ import mongoose from '../config/mongoose.js';
 const { Schema } = mongoose;
 
 // One M-Pesa payment attempt. `purpose` says what it was for: "donation" by default, a popup's
-// purpose (e.g. "premium"), or "book" when it unlocks the premium `book` for `user` once paid.
+// purpose (e.g. "premium"), "book" when it unlocks the premium `book` for `user` once paid, or
+// "pass" when it buys `user` a Premium Pass of `days` days (every premium book).
 // `provider` says who talked to Safaricom: ISA Tech Hub ("hub") or A-Read itself ("daraja").
 const paymentSchema = new Schema(
   {
@@ -13,6 +14,8 @@ const paymentSchema = new Schema(
     purpose: { type: String, trim: true, maxlength: 40, default: 'donation' },
     phone: { type: String, required: true },
     amount: { type: Number, required: true, min: 1 },
+    // Premium Pass payments: how many days this payment buys (the price and length can change later).
+    days: Number,
     // disputed: M-Pesa reported a different amount (Hub payments only); an admin looks at it.
     status: { type: String, enum: ['pending', 'paid', 'failed', 'disputed'], default: 'pending', index: true },
     provider: { type: String, enum: ['daraja', 'hub'], default: 'daraja' },
@@ -36,6 +39,12 @@ paymentSchema.index({ book: 1, status: 1, user: 1 });
 paymentSchema.index(
   { user: 1, book: 1 },
   { unique: true, partialFilterExpression: { status: 'pending', book: { $exists: true } }, name: 'one_pending_unlock' },
+);
+
+// And at most one Premium Pass payment waiting per reader.
+paymentSchema.index(
+  { user: 1, purpose: 1 },
+  { unique: true, partialFilterExpression: { status: 'pending', purpose: 'pass' }, name: 'one_pending_pass' },
 );
 
 // For unlocking paid features later: has this reader paid at least `minAmount` for `purpose`?

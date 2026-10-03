@@ -12,7 +12,9 @@ import { Payment } from '../models/Payment.js';
 import { Promotion } from '../models/Promotion.js';
 import { applyHubPayment, hub, hubConfig, hubEnabled, hubStatus, verifyHubWebhook } from '../services/hub.js';
 import { mpesaEnabled, normalizePhone, parseCallback, resultMessage, stkPush, stkQuery } from '../services/mpesa.js';
+import { passExpiry } from '../services/pass.js';
 import { isPremium, lockedSectionsFor } from '../services/premium.js';
+import { getSettings, passOnSale } from '../services/settings.js';
 import { HttpError, badRequest, conflict, notFound, unauthorized } from '../utils/httpError.js';
 
 const router = Router();
@@ -110,9 +112,12 @@ const stkSchema = z.object({
   promotionId: z.string().regex(/^[a-f0-9]{24}$/i).nullable().optional(),
   // Unlocking a premium book: the amount is the book's price, whatever the browser sends.
   bookId: z.string().regex(/^[a-f0-9]{24}$/i).nullable().optional(),
+  // Buying the Premium Pass: the price and days are the admins', whatever the browser sends.
+  pass: z.boolean().optional(),
 });
 
-const describePayment = (book) => (book ? `Unlock "${book.title.slice(0, 60)}" on A-Read` : 'Support A-Read');
+const describePayment = (book, days) =>
+  book ? `Unlock "${book.title.slice(0, 60)}" on A-Read` : days ? `A-Read Premium Pass, ${days} days` : 'Support A-Read';
 
 // Asks ISA Tech Hub to send the prompt for `payment`. A-Read's own payment id is the Hub reference
 // and the idempotency key, so a retried request can never prompt the payer twice.
@@ -123,9 +128,14 @@ async function startThroughHub(payment, { promotion, book }) {
       amount: payment.amount,
       reference: payment.id,
       purpose: payment.purpose,
-      description: describePayment(book),
+      description: describePayment(book, payment.days),
       idempotencyKey: payment.id,
-      metadata: { promotion: promotion?.id ?? null, reader: payment.user ? 'signed-in' : 'guest', ...(book ? { book: book.id } : {}) },
+      metadata: {
+        promotion: promotion?.id ?? null,
+        reader: payment.user ? 'signed-in' : 'guest',
+        ...(book ? { book: book.id } : {}),
+        ...(payment.days ? { passDays: payment.days } : {}),
+      },
     });
     applyHubPayment(payment, remote);
     await payment.save();
@@ -144,7 +154,8 @@ async function startThroughHub(payment, { promotion, book }) {
 async function startThroughDaraja(payment, { book }) {
   try {
     // Daraja keeps only 13 characters of the description.
-    const result = await stkPush({ phone: payment.phone, amount: payment.amount, description: book ? 'A-Read book' : 'Support A-Read' });
+    const description = book ? 'A-Read book' : payment.purpose === 'pass' ? 'A-Read pass' : 'Support A-Read';
+    const result = await stkPush({ phone: payment.phone, amount: payment.amount, description });
     payment.checkoutRequestId = result.checkoutRequestId;
     payment.merchantRequestId = result.merchantRequestId;
     await payment.save();
@@ -161,8 +172,9 @@ async function startThroughDaraja(payment, { book }) {
 router.post('/stk', stkLimiter, optionalAuth, validate(stkSchema), async (req, res) => {
   const viaHub = hubEnabled();
   if (!viaHub && !mpesaEnabled()) throw new HttpError(503, 'M-Pesa payments are not set up yet');
-  const { promotionId, bookId } = req.valid.body;
+  const { promotionId, bookId, pass } = req.valid.body;
   let { amount } = req.valid.body;
+  let days;
   const phone = normalizePhone(req.valid.body.phone);
   if (!phone) throw badRequest('Enter a Safaricom number like 0712 345 678');
 
@@ -181,10 +193,22 @@ router.post('/stk', stkLimiter, optionalAuth, validate(stkSchema), async (req, r
     }
     // A prompt for this book may still be open (the reader reloaded, or M-Pesa's answer is late):
     // pick that payment up again instead of charging twice.
-    const waiting = await resumableBookPayment(req.user, book);
+    const waiting = await resumablePayment(req.user, { book: book._id });
     if (waiting?.status === 'paid') throw conflict('You have already unlocked this book');
     if (waiting) return res.json({ payment: publicPayment(waiting), resumed: true });
     amount = book.premium.price;
+  } else if (pass) {
+    // The Premium Pass, for the signed-in reader. Buying it again while it lasts adds the days on.
+    if (!req.user) throw unauthorized('Sign in to get the Premium Pass');
+    const onSale = passOnSale(await getSettings());
+    if (!onSale) throw badRequest('The Premium Pass is not on sale right now');
+    if (await Payment.exists({ user: req.user._id, purpose: 'pass', status: 'disputed' })) {
+      throw conflict("We're checking your earlier Premium Pass payment (M-Pesa reported a different amount), so there's no need to pay again.");
+    }
+    // A pass prompt may still be open: follow that one rather than charging twice.
+    const waiting = await resumablePayment(req.user, { purpose: 'pass' });
+    if (waiting) return res.json({ payment: publicPayment(waiting), resumed: true });
+    ({ price: amount, days } = onSale);
   } else if (amount === undefined) {
     throw badRequest('Enter an amount');
   }
@@ -194,28 +218,31 @@ router.post('/stk', stkLimiter, optionalAuth, validate(stkSchema), async (req, r
   if (recent) throw new HttpError(429, 'A payment request was just sent to this phone. Check it, or try again in a minute.');
 
   // The purpose comes from the promotion an admin set up, never from the browser.
-  const promotion = promotionId && !book ? await Promotion.findById(promotionId).select('purpose') : null;
+  const promotion = promotionId && !book && !pass ? await Promotion.findById(promotionId).select('purpose') : null;
   const fields = {
     user: req.user?._id,
     promotion: promotion?._id,
     book: book?._id,
-    purpose: book ? 'book' : promotion?.purpose || 'donation',
+    purpose: book ? 'book' : pass ? 'pass' : promotion?.purpose || 'donation',
     phone,
     amount,
+    days,
     provider: viaHub ? 'hub' : 'daraja',
   };
+  // Purchases that belong to one reader: only one prompt may wait for M-Pesa at a time.
+  const owned = book ? { book: book._id } : pass ? { purpose: 'pass' } : null;
   let payment;
   for (let attempt = 1; !payment; attempt++) {
     try {
       payment = await Payment.create(fields);
     } catch (err) {
-      // Two unlock requests at the same moment (two tabs or devices): only one payment may be
-      // waiting per reader and book, so the second one follows the first. If that one has already
-      // ended (its prompt was refused), try once more.
-      if (err.code !== 11000 || !book) throw err;
-      const first = await Payment.findOne({ user: req.user._id, book: book._id, status: 'pending' });
+      // Two unlock (or pass) requests at the same moment (two tabs or devices): only one payment
+      // may be waiting per reader and book, so the second one follows the first. If that one has
+      // already ended (its prompt was refused), try once more.
+      if (err.code !== 11000 || !owned) throw err;
+      const first = await Payment.findOne({ user: req.user._id, ...owned, status: 'pending' });
       if (first) return res.json({ payment: publicPayment(first), resumed: true });
-      if (attempt >= 2) throw new HttpError(429, 'A payment request for this book was just sent. Check your phone, or try again in a minute.');
+      if (attempt >= 2) throw new HttpError(429, 'A payment request for this was just sent. Check your phone, or try again in a minute.');
     }
   }
 
@@ -320,11 +347,11 @@ router.get('/setup', requireAuth, requireAdmin, async (req, res) => {
   });
 });
 
-// The reader's unlock payment for `book` that is still waiting for M-Pesa, freshly checked, or null.
-// One that has had no answer for GIVE_UP_MS counts as failed (a late success still settles it), so
-// the reader can try again.
-async function resumableBookPayment(user, book) {
-  let waiting = await Payment.findOne({ user: user._id, book: book._id, status: 'pending' }).sort({ createdAt: -1 });
+// The reader's payment matching `filter` (a book unlock, or the pass) that is still waiting for
+// M-Pesa, freshly checked, or null. One that has had no answer for GIVE_UP_MS counts as failed (a
+// late success still settles it), so the reader can try again.
+async function resumablePayment(user, filter) {
+  let waiting = await Payment.findOne({ user: user._id, ...filter, status: 'pending' }).sort({ createdAt: -1 });
   if (!waiting) return null;
   waiting = await (waiting.provider === 'hub' ? refreshFromHub(waiting) : refreshFromDaraja(waiting));
   if (waiting.status === 'pending' && Date.now() - waiting.createdAt.getTime() > GIVE_UP_MS) waiting = await giveUp(waiting);
@@ -369,6 +396,25 @@ async function refreshFromDaraja(payment) {
   await payment.save();
   return payment.status === 'pending' && age > GIVE_UP_MS ? giveUp(payment) : payment;
 }
+
+// The Premium Pass: whether it's on sale, what it opens, and until when the reader has it.
+router.get('/pass', optionalAuth, async (req, res) => {
+  const [settings, premiumBooks, activeUntil] = await Promise.all([
+    getSettings(),
+    Book.countDocuments({ 'premium.enabled': true, 'premium.lockedSections.0': { $exists: true } }),
+    passExpiry(req.user),
+  ]);
+  const onSale = passOnSale(settings);
+  res.json({
+    onSale: Boolean(onSale),
+    price: onSale?.price ?? null,
+    days: onSale?.days ?? null,
+    premiumBooks,
+    // Kept after it runs out, so the page can say when it ended.
+    activeUntil,
+    active: Boolean(activeUntil && activeUntil > new Date()),
+  });
+});
 
 // The payer's page polls this.
 router.get('/:id', async (req, res) => {

@@ -1,6 +1,7 @@
 import { env } from './config/env.js';
 import { connectDb } from './config/db.js';
 import { createApp } from './app.js';
+import { backfillAuthors } from './services/authors.js';
 import { hubEnabled, hubStatus } from './services/hub.js';
 import { mpesaEnabled } from './services/mpesa.js';
 import { markInterruptedJobs } from './services/narration.js';
@@ -32,6 +33,8 @@ async function main() {
   if (promoted) console.log(`Made ${promoted} account(s) from SUPER_ADMIN_EMAILS super admins`);
   if (!(await hasSuperAdmin())) console.log('No super admin yet: set SUPER_ADMIN_EMAILS so someone can manage roles and site settings');
   await ensureUnlockIndex().catch((err) => console.error(`Could not set up the one-payment-per-book rule: ${err.message}`));
+  const authors = await backfillAuthors().catch((err) => console.error(`Could not set up author pages for older books: ${err.message}`));
+  if (authors) console.log(`Set up author pages for ${authors} older book(s)`);
   const quotes = await seedClassicQuotes();
   if (quotes) console.log(`Added ${quotes} classic book quotes (manage them in Admin → Quotes)`);
   const app = createApp();

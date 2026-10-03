@@ -43,10 +43,12 @@ function fileFilter(req, file, cb) {
 
 const mb = (n) => n * 1024 * 1024;
 
-// Deletes multer's temp files once the response has been sent (success or failure).
+// Deletes multer's temp files once the response has been sent (success or failure). A file cut
+// off mid-upload (the reader reloaded or closed the tab) may have no path yet: skip it, or
+// fs.rm throws and takes the whole server down.
 function cleanupTempFiles(req, res, next) {
   res.on('close', () => {
-    const files = [req.file, ...Object.values(req.files || {}).flat()].filter(Boolean);
+    const files = [req.file, ...Object.values(req.files || {}).flat()].filter((file) => file?.path);
     for (const file of files) fs.rm(file.path, { force: true }, () => {});
   });
   next();

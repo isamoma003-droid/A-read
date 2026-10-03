@@ -7,6 +7,7 @@ process.env.SUPER_ADMIN_EMAILS = 'sam@example.com,sue@example.com';
 process.env.CLOUDINARY_MAX_FILE_MB = '0.004'; // ~4 KB parts so the chunking path is exercised
 process.env.FRONTEND_URL = 'https://a-read.example';
 process.env.GOOGLE_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
+process.env.INDEXNOW_KEY = 'test-indexnow-key-123';
 Object.assign(process.env, {
   MPESA_CONSUMER_KEY: 'key',
   MPESA_CONSUMER_SECRET: 'secret',
@@ -32,6 +33,7 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
   const uploads = [];
   const destroyed = [];
   const renamed = [];
+  const announced = [];
   let renameFails = () => false;
 
   before(async () => {
@@ -62,6 +64,13 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     };
     cloudinary.api.delete_resources_by_prefix = async (prefix) => destroyed.push(prefix);
     cloudinary.api.delete_folder = async () => {};
+
+    // New and changed pages are announced to IndexNow; record them instead of calling out.
+    const { setIndexNowTransport } = await import('../src/services/indexnow.js');
+    setIndexNowTransport(async (url, { body }) => {
+      announced.push(...JSON.parse(body).urlList);
+      return { status: 202 };
+    });
 
     const { connectDb } = await import('../src/config/db.js');
     const { createApp } = await import('../src/app.js');
@@ -191,6 +200,66 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal(del.status, 204);
   });
 
+  test('an upload sent again after a reload adds the book only once', async () => {
+    const text = 'CHAPTER 1\n\nSent twice.';
+    const send = (key, token = bob) => api('/books', { token, method: 'POST', form: bookForm('twice.txt', text, { uploadKey: key }) });
+
+    // The page reloaded after the upload reached the server: the same key hands back the same book.
+    let res = await send('key-reload-0001');
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const first = res.body.book;
+    assert.equal(first.uploadKey, undefined, 'the key stays private');
+    res = await send('key-reload-0001');
+    assert.equal(res.status, 200);
+    assert.equal(res.body.book.id, first.id);
+    assert.equal(res.body.book.uploadedBy.name, 'Bob');
+
+    // Both copies arrive at the same moment: still one book.
+    const both = await Promise.all([send('key-at-once-0002'), send('key-at-once-0002')]);
+    assert.deepEqual(both.map((r) => r.status).sort(), [200, 201], JSON.stringify(both.map((r) => r.body)));
+    assert.equal(both[0].body.book.id, both[1].body.book.id);
+    const second = both[0].body.book;
+
+    // The upload page asks which of its uploads already made it.
+    res = await api('/books/uploads?keys=key-reload-0001,key-at-once-0002,key-never-sent-3,../bad', { token: bob });
+    assert.equal(res.status, 200);
+    assert.deepEqual(Object.keys(res.body.books).sort(), ['key-at-once-0002', 'key-reload-0001']);
+    assert.equal(res.body.books['key-reload-0001'].id, first.id);
+    // Keys belong to the person who uploaded: Alice's upload with Bob's key is a new book.
+    assert.deepEqual((await api('/books/uploads?keys=key-reload-0001', { token: alice })).body.books, {});
+    res = await send('key-reload-0001', alice);
+    assert.equal(res.status, 201);
+    assert.notEqual(res.body.book.id, first.id);
+    const alices = res.body.book;
+    assert.equal((await api('/books/uploads?keys=x')).status, 401);
+    assert.equal((await send('no spaces allowed')).status, 400);
+
+    for (const [book, token] of [[first, bob], [second, bob], [alices, alice]]) {
+      assert.equal((await api(`/books/${book.id}`, { token, method: 'DELETE' })).status, 204);
+    }
+  });
+
+  test('an upload cut off half-way (a reload, a closed tab) does not take the server down', async () => {
+    const { port } = server.address();
+    const boundary = '----a-read-test';
+    await new Promise((resolve) => {
+      const req = http.request({
+        port,
+        method: 'POST',
+        path: '/api/books',
+        headers: { authorization: `Bearer ${bob}`, 'content-type': `multipart/form-data; boundary=${boundary}`, 'content-length': 10_000_000 },
+      });
+      req.on('error', () => resolve());
+      req.write(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="cut.txt"\r\nContent-Type: text/plain\r\n\r\n`);
+      req.write('x'.repeat(200_000), () => setTimeout(() => {
+        req.destroy();
+        resolve();
+      }, 100));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal((await api('/health')).status, 200, 'still answering');
+  });
+
   test('shared library lists, searches and filters every book', async () => {
     let res = await api('/books', { token: bob });
     assert.equal(res.body.total, 3);
@@ -260,13 +329,116 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal((await api('/progress')).status, 401);
   });
 
-  test('sitemap lists the home page and every book', async () => {
-    const res = await fetch(`${base.replace('/api', '')}/sitemap.xml?origin=https://a-read.vercel.app`);
+  test('sitemaps list the main pages, every author and every book', async () => {
+    const root = base.replace('/api', '');
+    const get = async (path) => {
+      const res = await fetch(`${root}${path}?origin=https://a-read.vercel.app`);
+      return { status: res.status, type: res.headers.get('content-type'), text: await res.text() };
+    };
+    const locs = (xml) => [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
+
+    let res = await get('/sitemap.xml');
     assert.equal(res.status, 200);
-    assert.match(res.headers.get('content-type'), /xml/);
-    const xml = await res.text();
-    assert.match(xml, /<loc>https:\/\/a-read\.vercel\.app\/<\/loc>/);
-    assert.match(xml, new RegExp(`<loc>https://a-read\\.vercel\\.app/books/${txtBook.id}</loc>`));
+    assert.match(res.type, /xml/);
+    assert.match(res.text, /<sitemapindex /);
+    assert.deepEqual(locs(res.text), [
+      'https://a-read.vercel.app/sitemaps/pages.xml',
+      'https://a-read.vercel.app/sitemaps/authors-1.xml',
+      'https://a-read.vercel.app/sitemaps/books-1.xml',
+    ]);
+    assert.match(res.text, /<lastmod>\d{4}-\d\d-\d\dT/);
+
+    res = await get('/sitemaps/pages.xml');
+    assert.deepEqual(locs(res.text), ['https://a-read.vercel.app/', 'https://a-read.vercel.app/authors']);
+
+    res = await get('/sitemaps/authors-1.xml');
+    assert.equal(res.status, 200);
+    const authorPages = locs(res.text);
+    assert.ok(authorPages.includes('https://a-read.vercel.app/authors/a-writer'), authorPages.join(' '));
+    assert.ok(authorPages.includes('https://a-read.vercel.app/authors/e-author'));
+
+    res = await get('/sitemaps/books-1.xml');
+    assert.ok(locs(res.text).includes(`https://a-read.vercel.app/books/${txtBook.id}`));
+    // Covers are listed for image search.
+    assert.match(res.text, /<image:image><image:loc>https:\/\/res\.cloudinary\.com\/[^<]+<\/image:loc><\/image:image>/);
+
+    for (const missing of ['/sitemaps/books-2.xml', '/sitemaps/books-0.xml', '/sitemaps/books.xml', '/sitemaps/pages-1.xml', '/sitemaps/x.xml']) {
+      assert.equal((await get(missing)).status, 404, missing);
+    }
+    res = await get('/robots.txt');
+    assert.match(res.text, /Sitemap: https:\/\/a-read\.vercel\.app\/sitemap\.xml/);
+    res = await get('/indexnow-key.txt');
+    assert.equal(res.text, 'test-indexnow-key-123');
+  });
+
+  test('everyone named as an author gets a page, announced to search engines', async () => {
+    const { Book } = await import('../src/models/Book.js');
+    const { backfillAuthors } = await import('../src/services/authors.js');
+    const { flushIndexNow } = await import('../src/services/indexnow.js');
+    const add = async (author) => {
+      const res = await api('/books', { token: alice, method: 'POST', form: bookForm(`${author.length}.txt`, 'CHAPTER 1\n\nWords.', { author }) });
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+      return res.body.book;
+    };
+    await flushIndexNow();
+    announced.length = 0;
+    const one = await add('Chinua Achebe');
+    const two = await add("Chinua Achebe and Ngũgĩ wa Thiong'o");
+    const three = await add('Doe, Jane');
+    assert.deepEqual(two.authors, [
+      { name: 'Chinua Achebe', slug: 'chinua-achebe' },
+      { name: "Ngũgĩ wa Thiong'o", slug: 'ngugi-wa-thiong-o' },
+    ]);
+
+    // New books and their authors' pages are announced together.
+    await flushIndexNow();
+    for (const page of [`/books/${one.id}`, `/books/${two.id}`, '/authors/chinua-achebe', '/authors/ngugi-wa-thiong-o', '/authors/doe-jane']) {
+      assert.ok(announced.includes(`https://a-read.example${page}`), `${page} in ${announced.join(' ')}`);
+    }
+
+    // Anyone can browse the authors, search them and open one.
+    let res = await api('/authors?q=achebe');
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.authors.map((a) => [a.slug, a.name, a.books]), [['chinua-achebe', 'Chinua Achebe', 2]]);
+    res = await api('/authors?sort=books&limit=1');
+    assert.equal(res.body.authors[0].slug, 'chinua-achebe');
+    assert.ok(res.body.total >= 4);
+    assert.ok(res.body.pages >= 4);
+    res = await api('/authors');
+    const all = res.body.authors.map((a) => a.name);
+    assert.deepEqual(all, [...all].sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' })), 'A to Z');
+    res = await api('/authors/chinua-achebe');
+    assert.deepEqual([res.body.author.name, res.body.author.books, res.body.author.bio], ['Chinua Achebe', 2, '']);
+    res = await api('/books?author=chinua-achebe');
+    assert.deepEqual(res.body.books.map((b) => b.id).sort(), [one.id, two.id].sort());
+    assert.equal((await api('/authors/nobody-at-all')).status, 404);
+    assert.equal((await api('/authors/bad%20slug!')).status, 400);
+
+    // Admins write the bio on the author's page.
+    assert.equal((await api('/authors/chinua-achebe', { token: bob, method: 'PUT', body: { bio: 'x' } })).status, 403);
+    assert.equal((await api('/authors/nobody-at-all', { token: alice, method: 'PUT', body: { bio: 'x' } })).status, 404);
+    res = await api('/authors/chinua-achebe', { token: alice, method: 'PUT', body: { bio: '  Nigerian novelist and poet.  ' } });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.author.bio, 'Nigerian novelist and poet.');
+    assert.equal((await api('/authors/chinua-achebe')).body.author.bio, 'Nigerian novelist and poet.');
+
+    // Editing the author line moves the book between pages.
+    res = await api(`/books/${two.id}`, { token: alice, method: 'PATCH', body: { author: 'Chinua Achebe' } });
+    assert.deepEqual(res.body.book.authors, [{ name: 'Chinua Achebe', slug: 'chinua-achebe' }]);
+    assert.equal((await api('/authors/ngugi-wa-thiong-o')).status, 404);
+    announced.length = 0;
+    await flushIndexNow();
+    assert.ok(announced.includes('https://a-read.example/authors/ngugi-wa-thiong-o'), 'the page that lost a book is announced too');
+
+    // Books saved before author pages existed are set up at startup.
+    await Book.collection.updateOne({ _id: new mongoose.Types.ObjectId(three.id) }, { $unset: { authors: '' } });
+    assert.equal((await api('/authors/doe-jane')).status, 404);
+    assert.equal(await backfillAuthors(), 1);
+    assert.equal((await api('/authors/doe-jane')).body.author.name, 'Doe, Jane');
+    assert.equal(await backfillAuthors(), 0);
+
+    for (const book of [one, two, three]) await api(`/books/${book.id}`, { token: alice, method: 'DELETE' });
+    assert.equal((await api('/authors/chinua-achebe')).status, 404);
   });
 
   test('only the uploader can edit a book', async () => {
@@ -308,6 +480,108 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal(res.body.book.finishedAt, first);
     res = await api(`/progress/${txtBook.id}`, { token: alice, method: 'PUT', body: { finished: false } });
     assert.equal(res.body.progress.completedAt, undefined);
+  });
+
+  test('readers rate and review books; the uploader cannot rate their own', async () => {
+    const reviews = (token) => api(`/books/${txtBook.id}/reviews`, { token });
+    const review = (token, body) => api(`/books/${txtBook.id}/reviews/mine`, { token, method: 'PUT', body });
+    const rita = (await api('/auth/register', { method: 'POST', body: { name: 'Rita', email: 'rita@example.com', password: 'password8' } })).body.token;
+    const before = (await api(`/books/${txtBook.id}`)).body.book;
+    assert.equal(before.rating, null);
+
+    let res = await reviews();
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.summary, { average: null, count: 0, distribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 } });
+    assert.deepEqual([res.body.reviews, res.body.mine, res.body.canReview], [[], null, false]);
+    assert.equal((await review(undefined, { rating: 4 })).status, 401);
+    assert.equal((await review(alice, { rating: 5 })).status, 403, 'Alice uploaded it');
+    assert.equal((await reviews(alice)).body.canReview, false);
+    assert.match((await review(bob, { rating: 6 })).body.error, /1 to 5 stars/);
+    assert.equal((await review(bob, { rating: 3.5 })).status, 400);
+
+    // Bob finished the book, so his review says so.
+    await api(`/progress/${txtBook.id}`, { token: bob, method: 'PUT', body: { finished: true } });
+    res = await review(bob, { rating: 4, text: '  Gripping from the first page.  ' });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.deepEqual([res.body.review.rating, res.body.review.text, res.body.review.finished, res.body.review.mine], [4, 'Gripping from the first page.', true, true]);
+    assert.equal(res.body.summary.average, 4);
+    // Stars without words count, but only reviews with words are listed.
+    res = await review(rita, { rating: 5 });
+    assert.deepEqual([res.body.summary.average, res.body.summary.count, res.body.summary.distribution[5]], [4.5, 2, 1]);
+    res = await reviews();
+    assert.deepEqual(res.body.reviews.map((r) => [r.user.name, r.rating, r.mine]), [['Bob', 4, false]]);
+    assert.equal(res.body.total, 1);
+    assert.equal(res.body.reviews[0].user.email, undefined);
+    res = await reviews(rita);
+    assert.deepEqual([res.body.mine.rating, res.body.mine.text, res.body.mine.finished, res.body.canReview], [5, '', false, true]);
+
+    // One review per reader: Bob changes his mind.
+    res = await review(bob, { rating: 2, text: 'Slow in the middle.' });
+    assert.deepEqual([res.body.summary.average, res.body.summary.count], [3.5, 2]);
+    res = await api(`/books/${txtBook.id}`);
+    assert.deepEqual(res.body.book.rating, { average: 3.5, count: 2 });
+    assert.equal(res.body.book.updatedAt, before.updatedAt, "a review isn't a change to the book");
+    res = await api('/books?sort=rating');
+    assert.equal(res.body.books[0].id, txtBook.id, 'rated books come first');
+    assert.deepEqual(res.body.books[0].rating, { average: 3.5, count: 2 });
+
+    // Readers take their rating back; admins remove reviews that break the rules.
+    res = await api(`/books/${txtBook.id}/reviews/mine`, { token: rita, method: 'DELETE' });
+    assert.deepEqual([res.body.summary.average, res.body.summary.count], [2, 1]);
+    const bobs = (await reviews()).body.reviews[0].id;
+    assert.equal((await api(`/books/${txtBook.id}/reviews/${bobs}`, { token: bob, method: 'DELETE' })).status, 403);
+    res = await api(`/books/${txtBook.id}/reviews/${bobs}`, { token: alice, method: 'DELETE' });
+    assert.deepEqual(res.body.summary, { average: null, count: 0, distribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 } });
+    assert.equal((await api(`/books/${txtBook.id}`)).body.book.rating, null);
+    assert.equal((await api(`/books/${txtBook.id}/reviews/${bobs}`, { token: alice, method: 'DELETE' })).status, 404);
+    assert.equal((await api('/books/0123456789abcdef01234567/reviews')).status, 404);
+    await api(`/progress/${txtBook.id}`, { token: bob, method: 'PUT', body: { finished: false } });
+
+    // Removing an account takes its ratings with it.
+    await review(rita, { rating: 1 });
+    assert.equal((await api(`/books/${txtBook.id}`)).body.book.rating.count, 1);
+    const ritaId = (await api('/auth/me', { token: rita })).body.user.id;
+    assert.equal((await api(`/admin/users/${ritaId}`, { token: alice, method: 'DELETE' })).status, 204);
+    assert.equal((await api(`/books/${txtBook.id}`)).body.book.rating, null);
+  });
+
+  test('book pages suggest more by the author and similar books; admins feature books', async () => {
+    const add = async (author, tags) => {
+      const res = await api('/books', { token: alice, method: 'POST', form: bookForm(`${tags}.txt`, 'CHAPTER 1\n\nWords.', { author, tags }) });
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+      return res.body.book;
+    };
+    const first = await add('Zed Writer', 'sea, adventure');
+    const second = await add('Zed Writer', 'poetry');
+    const closest = await add('Other One', 'sea, adventure');
+    const close = await add('Other Two', 'adventure');
+    const unrelated = await add('Other Three', 'cooking');
+
+    let res = await api(`/books/${first.id}/related`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.byAuthor.map((b) => b.id), [second.id]);
+    assert.deepEqual(res.body.similar.map((b) => b.id), [closest.id, close.id], 'most shared tags first');
+    assert.ok(res.body.similar.every((b) => b.file === undefined), 'guests get catalogue entries');
+    res = await api(`/books/${unrelated.id}/related`);
+    assert.deepEqual([res.body.byAuthor, res.body.similar], [[], []]);
+    assert.equal((await api('/books/0123456789abcdef01234567/related')).status, 404);
+
+    // Admins put books on the home page's Featured shelf for a while.
+    const feature = (book, days, token = alice) => api(`/admin/books/${book.id}/featured`, { token, method: 'PUT', body: { days } });
+    assert.equal((await feature(close, 7, bob)).status, 403);
+    assert.equal((await feature(close, 400)).status, 400);
+    res = await feature(close, 7);
+    assert.equal(res.status, 200);
+    assert.ok(Math.abs(new Date(res.body.featuredUntil).getTime() - (Date.now() + 7 * 86_400_000)) < 60_000);
+    res = await api('/books?featured=true');
+    assert.deepEqual(res.body.books.map((b) => b.id), [close.id]);
+    assert.ok(res.body.books[0].featuredUntil);
+    assert.equal((await api(`/books/${first.id}`)).body.book.featuredUntil, null);
+    res = await feature(close, 0);
+    assert.equal(res.body.featuredUntil, null);
+    assert.equal((await api('/books?featured=true')).body.total, 0);
+
+    for (const book of [first, second, closest, close, unrelated]) await api(`/books/${book.id}`, { token: alice, method: 'DELETE' });
   });
 
   test('admins assign required reading and track completion', async () => {
@@ -1188,6 +1462,126 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     await premium({ enabled: false });
   });
 
+  test('a Premium Pass opens every premium book until it runs out', async () => {
+    const { Payment } = await import('../src/models/Payment.js');
+    const { setMpesaTransport } = await import('../src/services/mpesa.js');
+    const register = async (name) =>
+      (await api('/auth/register', { method: 'POST', body: { name, email: `${name.toLowerCase()}@example.com`, password: 'password9' } })).body.token;
+    const pia = await register('Pia');
+    const quinn = await register('Quinn');
+    // The book from the test before, premium again (its price and locked chapters were kept).
+    const premiumBook = (await api('/books?q=Paid Book')).body.books[0];
+    const setPremium = (enabled) => api(`/admin/books/${premiumBook.id}/premium`, { token: alice, method: 'PUT', body: { enabled } });
+    assert.equal((await setPremium(true)).status, 200);
+    const pass = (token) => api('/payments/pass', { token });
+    const buy = (token, phone, extra = {}) => api('/payments/stk', { token, method: 'POST', body: { phone, pass: true, ...extra } });
+    const paid = (checkoutId, receipt) =>
+      api('/payments/mpesa/callback/callback-secret', {
+        method: 'POST',
+        body: {
+          Body: {
+            stkCallback: {
+              MerchantRequestID: 'm_pass',
+              CheckoutRequestID: checkoutId,
+              ResultCode: 0,
+              ResultDesc: 'Paid',
+              CallbackMetadata: { Item: [{ Name: 'Amount', Value: 300 }, { Name: 'MpesaReceiptNumber', Value: receipt }] },
+            },
+          },
+        },
+      });
+
+    let res = await pass();
+    assert.deepEqual(res.body, { onSale: false, price: null, days: null, premiumBooks: 1, activeUntil: null, active: false });
+    assert.match((await buy(pia, '0712000201')).body.error, /not on sale/);
+    assert.equal((await buy(undefined, '0712000201')).status, 401);
+
+    // Admins put it on sale.
+    const setPass = (body, token = alice) => api('/admin/pass', { token, method: 'PUT', body });
+    assert.equal((await setPass({ enabled: true, price: 300 }, pia)).status, 403);
+    assert.match((await setPass({ enabled: true })).body.error, /Set the price/);
+    assert.match((await setPass({ enabled: true, price: 5 })).body.error, /lowest price/);
+    assert.match((await setPass({ enabled: true, price: 300, days: 400 })).body.error, /at most a year/);
+    res = await setPass({ enabled: true, price: 300, days: 30 });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.deepEqual(res.body.pass, { enabled: true, price: 300, days: 30, sales: { amount: 0, count: 0 }, holders: 0 });
+    assert.deepEqual((await api('/system/config')).body.pass, { price: 300, days: 30 });
+    assert.equal((await api(`/books/${premiumBook.id}`, { token: pia })).body.book.unlocked, false);
+
+    const calls = [];
+    let pushes = 0;
+    setMpesaTransport(async (url, { body }) => {
+      calls.push({ url, body });
+      if (url.includes('/oauth/')) return { status: 200, json: { access_token: 'token', expires_in: '3599' } };
+      if (url.includes('/stkpushquery/')) return { status: 500, json: { errorCode: '500.001.1001', errorMessage: 'The transaction is being processed' } };
+      pushes++;
+      return { status: 200, json: { ResponseCode: '0', CheckoutRequestID: `ws_CO_pass_${pushes}`, MerchantRequestID: 'm_pass' } };
+    });
+    try {
+      // The price and length come from the admins, not the browser.
+      res = await buy(pia, '0712000201', { amount: 10 });
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+      const first = res.body.payment;
+      assert.equal(first.amount, 300);
+      const push = calls.find((c) => c.url.endsWith('/processrequest'));
+      assert.deepEqual([push.body.Amount, push.body.TransactionDesc], [300, 'A-Read pass']);
+      assert.equal((await Payment.findById(first.id)).days, 30);
+      // Asking again while the prompt is open follows the same payment.
+      res = await buy(pia, '0712000209');
+      assert.deepEqual([res.status, res.body.resumed, res.body.payment.id], [200, true, first.id]);
+      // Two requests at the same moment still make one payment.
+      const both = await Promise.all(['0712000301', '0712000302'].map((phone) => buy(quinn, phone)));
+      assert.deepEqual(both.map((r) => r.status).sort(), [200, 201]);
+      assert.equal(both[0].body.payment.id, both[1].body.payment.id);
+
+      // Paid: every premium book opens for Pia, and only for her.
+      await paid('ws_CO_pass_1', 'TJKPASS001');
+      res = await pass(pia);
+      assert.equal(res.body.active, true);
+      const until = new Date(res.body.activeUntil).getTime();
+      assert.ok(Math.abs(until - (Date.now() + 30 * 86_400_000)) < 60_000, res.body.activeUntil);
+      res = await api(`/books/${premiumBook.id}`, { token: pia });
+      assert.equal(res.body.book.unlocked, true);
+      assert.ok(res.body.book.file.url);
+      assert.equal((await api(`/books/${premiumBook.id}/sections/2`, { token: pia })).status, 200);
+      assert.equal((await api('/books?access=premium', { token: pia })).body.books[0].unlocked, true);
+      assert.equal((await api(`/books/${premiumBook.id}/sections/2`, { token: quinn })).status, 402);
+
+      // Buying again before it runs out adds the days on the end.
+      res = await buy(pia, '0712000201');
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+      await paid('ws_CO_pass_3', 'TJKPASS002');
+      res = await pass(pia);
+      assert.ok(Math.abs(new Date(res.body.activeUntil).getTime() - (until + 30 * 86_400_000)) < 60_000);
+
+      res = await api('/admin/pass', { token: alice });
+      assert.deepEqual([res.body.pass.sales, res.body.pass.holders], [{ amount: 600, count: 2 }, 1]);
+      res = await api('/payments?purpose=pass', { token: alice });
+      assert.equal(res.body.totals.byPurpose.pass.amount, 600);
+
+      // Once it runs out, the book locks again.
+      const piaId = (await api('/auth/me', { token: pia })).body.user.id;
+      await Payment.updateMany({ user: piaId, purpose: 'pass' }, { $set: { paidAt: new Date(Date.now() - 61 * 86_400_000) } });
+      res = await pass(pia);
+      assert.deepEqual([res.body.active, Boolean(res.body.activeUntil)], [false, true]);
+      assert.equal((await api(`/books/${premiumBook.id}/sections/2`, { token: pia })).status, 402);
+      assert.equal((await api('/admin/pass', { token: alice })).body.pass.holders, 0);
+
+      // While M-Pesa's amount for an earlier pass payment is checked, no new prompt is sent.
+      await Payment.updateOne({ user: piaId, purpose: 'pass' }, { $set: { status: 'disputed' } });
+      assert.match((await buy(pia, '0712000201')).body.error, /no need to pay again/);
+    } finally {
+      setMpesaTransport(null);
+    }
+
+    // Taking it off sale stops new passes (ones bought keep their time).
+    res = await setPass({ enabled: false });
+    assert.deepEqual([res.body.pass.enabled, res.body.pass.price], [false, 300]);
+    assert.equal((await api('/system/config')).body.pass, null);
+    assert.match((await buy(quinn, '0712000301')).body.error, /not on sale/);
+    await setPremium(false);
+  });
+
   let sam;
 
   test('super admins manage roles and site settings', async () => {
@@ -1221,11 +1615,11 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal(res.status, 200);
     assert.deepEqual(res.body.services.find((s) => s.id === 'database').ok, true);
     assert.equal(res.body.counts.superAdmins, 1);
-    assert.deepEqual((await api('/system/config')).body, { signupsOpen: true, uploads: 'everyone', quotesEnabled: true, announcement: '' });
+    assert.deepEqual((await api('/system/config')).body, { signupsOpen: true, uploads: 'everyone', quotesEnabled: true, announcement: '', pass: null });
 
     const settings = { signupsOpen: false, uploads: 'admins', quotesEnabled: false, announcement: '  Maintenance tonight at 10 pm  ' };
     res = await api('/system/settings', { token: sam, method: 'PUT', body: settings });
-    assert.deepEqual(res.body.settings, { ...settings, announcement: 'Maintenance tonight at 10 pm' });
+    assert.deepEqual(res.body.settings, { ...settings, announcement: 'Maintenance tonight at 10 pm', pass: null });
     assert.equal((await api('/system/config')).body.announcement, 'Maintenance tonight at 10 pm');
 
     // Closed sign-ups: new accounts are refused (by email or Google), except configured admins.
@@ -1246,7 +1640,7 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     assert.equal(res.status, 201);
 
     res = await api('/system/settings', { token: sam, method: 'PUT', body: { signupsOpen: true, uploads: 'everyone', quotesEnabled: true, announcement: '' } });
-    assert.deepEqual(res.body.settings, { signupsOpen: true, uploads: 'everyone', quotesEnabled: true, announcement: '' });
+    assert.deepEqual(res.body.settings, { signupsOpen: true, uploads: 'everyone', quotesEnabled: true, announcement: '', pass: null });
     assert.equal((await api('/system/settings', { token: sam, method: 'PUT', body: { uploads: 'nobody' } })).status, 400);
 
     // Accounts listed in SUPER_ADMIN_EMAILS are promoted at startup too.

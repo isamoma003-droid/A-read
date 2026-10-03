@@ -14,6 +14,13 @@ const settingsSchema = new Schema(
     quotesEnabled: { type: Boolean, default: true },
     // A notice at the top of every page (maintenance, news…). Empty shows nothing.
     announcement: { type: String, trim: true, maxlength: 300, default: '' },
+    // The Premium Pass: one M-Pesa payment of `price` (KES) opens every premium book for `days`
+    // days. Admins set it under Admin → Premium.
+    pass: {
+      enabled: { type: Boolean, default: false },
+      price: { type: Number, min: 1 },
+      days: { type: Number, min: 1, max: 366, default: 30 },
+    },
     // Set once the classic quotes have been added, so deleting them all doesn't bring them back.
     quotesSeeded: { type: Boolean, default: false },
     updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },

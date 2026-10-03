@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Crown, Lock, LockOpen, Pencil, Search, X } from 'lucide-react';
+import { Crown, Lock, LockOpen, Pencil, Search, Ticket, X } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
-import { keys, useAdminPremium, useBook, useBookPremium, useBooks, usePaymentConfig, useSections } from '../api/queries.js';
+import { keys, useAdminPass, useAdminPremium, useBook, useBookPremium, useBooks, usePaymentConfig, useSections } from '../api/queries.js';
 import BookCover from '../components/BookCover.jsx';
 import { ErrorMessage, Spinner } from '../components/Feedback.jsx';
 import { formatKes, formatNumber, partName } from '../utils/format.js';
@@ -25,6 +25,7 @@ export default function AdminPremium() {
 
   return (
     <div className="stack">
+      <PassSettings />
       {selected ? <PremiumEditor key={selected} bookId={selected} onClose={() => select(null)} /> : <PickBook onPick={select} />}
 
       <section className="panel">
@@ -323,5 +324,92 @@ function ChapterRow({ group, locked, format, sections, onToggle }) {
         <span className="muted small">{[where, `${formatNumber(words)} words`].filter(Boolean).join(' · ')}</span>
       </label>
     </li>
+  );
+}
+
+// The Premium Pass: one payment opens every premium book for a number of days. Recurring income
+// for the library alongside single-book sales.
+function PassSettings() {
+  const queryClient = useQueryClient();
+  const { data: pass, isPending, error } = useAdminPass();
+  const { data: config } = usePaymentConfig();
+  const [form, setForm] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const values = form ?? { price: pass?.price ?? '', days: pass?.days ?? 30 };
+
+  const save = async (enabled) => {
+    setBusy(true);
+    setSaveError(null);
+    try {
+      const body = { enabled, days: Number(values.days) };
+      if (values.price !== '') body.price = Number(values.price);
+      const result = await api('/admin/pass', { method: 'PUT', body });
+      queryClient.setQueryData(keys.adminPass, result.pass);
+      queryClient.invalidateQueries({ queryKey: keys.systemConfig });
+      queryClient.invalidateQueries({ queryKey: keys.pass });
+      setForm(null);
+    } catch (err) {
+      setSaveError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="panel form">
+      <h2 className="panel-title">
+        <Ticket size={18} aria-hidden="true" /> Premium Pass
+      </h2>
+      <p className="muted small">
+        One M-Pesa payment opens every premium book for a set number of days. It doesn&apos;t renew by itself; readers buy it again
+        and the days add on. Readers see it on <Link to="/premium">/premium</Link> and next to every unlock button.
+      </p>
+      <ErrorMessage error={error || saveError} />
+      {isPending && <Spinner label="Loading…" />}
+      {pass && (
+        <>
+          <div className="form-grid">
+            <label className="field">
+              <span>Price (KES)</span>
+              <input
+                type="number"
+                min={config?.minAmount ?? 1}
+                max={config?.maxAmount}
+                step={1}
+                value={values.price}
+                onChange={(e) => setForm({ ...values, price: e.target.value })}
+                placeholder="e.g. 300"
+              />
+            </label>
+            <label className="field">
+              <span>Days it lasts</span>
+              <input type="number" min={1} max={366} step={1} value={values.days} onChange={(e) => setForm({ ...values, days: e.target.value })} />
+            </label>
+          </div>
+          <div className="button-row">
+            <span className={`status-pill ${pass.enabled ? 'premium-on' : ''}`}>{pass.enabled ? 'On sale' : 'Not on sale'}</span>
+            {pass.enabled ? (
+              <>
+                <button type="button" className="button button-primary button-small" disabled={busy || !form} onClick={() => save(true)}>
+                  Save changes
+                </button>
+                <button type="button" className="button button-ghost button-small" disabled={busy} onClick={() => save(false)}>
+                  Stop selling
+                </button>
+              </>
+            ) : (
+              <button type="button" className="button button-primary button-small" disabled={busy || values.price === ''} onClick={() => save(true)}>
+                <Crown size={14} aria-hidden="true" /> Put on sale
+              </button>
+            )}
+          </div>
+          <p className="muted small">
+            Sold {pass.sales.count} pass{pass.sales.count === 1 ? '' : 'es'} for {formatKes(pass.sales.amount)} in all ·{' '}
+            {pass.holders} reader{pass.holders === 1 ? '' : 's'} hold one now
+          </p>
+        </>
+      )}
+    </section>
   );
 }
