@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { Capacitor } from '@capacitor/core';
+import { SocialLogin } from '@capgo/capacitor-social-login';
 import { api } from '../api/client.js';
 
 let scriptPromise;
@@ -28,7 +30,11 @@ export default function GoogleButton({ onCredential, text = 'continue_with' }) {
   const holder = useRef(null);
   const latest = useRef(onCredential);
   const [error, setError] = useState(null);
+  const [nativeClientId, setNativeClientId] = useState(null);
+  const [nativeBusy, setNativeBusy] = useState(false);
   const clientId = config?.googleClientId;
+  const isAndroidApp = Capacitor.getPlatform() === 'android';
+  const nativeReady = nativeClientId === clientId;
 
   useEffect(() => {
     latest.current = onCredential;
@@ -37,9 +43,23 @@ export default function GoogleButton({ onCredential, text = 'continue_with' }) {
   useEffect(() => {
     if (!clientId) return undefined;
     let cancelled = false;
+    if (isAndroidApp) {
+      SocialLogin.initialize({ google: { webClientId: clientId } })
+        .then(() => {
+          if (cancelled) return;
+          setError(null);
+          setNativeClientId(clientId);
+        })
+        .catch((err) => !cancelled && setError(err.message));
+      return () => {
+        cancelled = true;
+      };
+    }
+
     loadGoogleScript()
       .then(() => {
         if (cancelled || !holder.current) return;
+        setError(null);
         window.google.accounts.id.initialize({
           client_id: clientId,
           callback: (response) => latest.current(response.credential),
@@ -57,7 +77,24 @@ export default function GoogleButton({ onCredential, text = 'continue_with' }) {
     return () => {
       cancelled = true;
     };
-  }, [clientId, text]);
+  }, [clientId, isAndroidApp, text]);
+
+  const onNativeSignIn = async () => {
+    setError(null);
+    setNativeBusy(true);
+    try {
+      const { result } = await SocialLogin.login({
+        provider: 'google',
+        options: { scopes: ['email', 'profile'] },
+      });
+      if (!result.idToken) throw new Error('Google sign-in did not return an ID token.');
+      await latest.current(result.idToken);
+    } catch (err) {
+      setError(err.message || 'Google sign-in failed. Please try again.');
+    } finally {
+      setNativeBusy(false);
+    }
+  };
 
   if (!clientId) return null;
   return (
@@ -65,7 +102,21 @@ export default function GoogleButton({ onCredential, text = 'continue_with' }) {
       <div className="divider">
         <span>or</span>
       </div>
-      <div ref={holder} className="google-button" />
+      {isAndroidApp ? (
+        <button
+          type="button"
+          className="button google-native-button"
+          onClick={onNativeSignIn}
+          disabled={!nativeReady || nativeBusy}
+        >
+          <span className="google-native-mark" aria-hidden="true">
+            G
+          </span>
+          {nativeBusy ? 'Signing in…' : text === 'signup_with' ? 'Sign up with Google' : 'Sign in with Google'}
+        </button>
+      ) : (
+        <div ref={holder} className="google-button" />
+      )}
       {error && <p className="muted small">{error}</p>}
     </div>
   );

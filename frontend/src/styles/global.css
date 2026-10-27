@@ -2047,6 +2047,21 @@ input[type='range'] {
   min-height: 44px;
 }
 
+.google-native-button {
+  width: 100%;
+  min-height: 44px;
+  gap: 10px;
+  border-color: #747775;
+  background: #fff;
+  color: #1f1f1f;
+}
+
+.google-native-mark {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: #4285f4;
+}
+
 .link-button {
   border: none;
   background: none;
