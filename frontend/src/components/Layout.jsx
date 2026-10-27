@@ -1,11 +1,11 @@
 import { useState } from 'react';
-import { BookOpen, Crown, Feather, Heart, ListChecks, LogOut, Megaphone, Moon, Shield, Sun, Upload, X } from 'lucide-react';
+import { BookOpen, Crown, Download, Feather, Heart, ListChecks, LogOut, Megaphone, Moon, Shield, Smartphone, Sun, Upload, User, X } from 'lucide-react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useSystemConfig } from '../api/queries.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
 import { isAdmin } from '../utils/roles.js';
-import InstallButton from './InstallButton.jsx';
+import InstallButton, { InstallModal } from './InstallButton.jsx';
 import OfflineBanner from './OfflineBanner.jsx';
 import PromotionPopup from './PromotionPopup.jsx';
 import QuotePopup from './QuotePopup.jsx';
@@ -56,11 +56,112 @@ function Announcement({ text }) {
   );
 }
 
+function Footer({ onOpenInstall, system, user }) {
+  return (
+    <footer className="site-footer">
+      <div className="footer-inner">
+        <div className="footer-col footer-brand">
+          <Link to="/" className="brand">
+            <span className="brand-mark" aria-hidden="true">
+              <BookOpen size={18} />
+            </span>
+            <span className="brand-name">A-Read</span>
+          </Link>
+          <p className="muted small" style={{ marginTop: '8px', maxWidth: '300px' }}>
+            Your digital library for reading books, listening to narration, and offline reading anywhere on your device.
+          </p>
+        </div>
+
+        <div className="footer-col">
+          <h4 className="footer-heading">Explore</h4>
+          <ul className="footer-links">
+            <li>
+              <Link to="/">Library</Link>
+            </li>
+            <li>
+              <Link to="/authors">Authors</Link>
+            </li>
+            {system?.pass && (
+              <li>
+                <Link to="/premium">Premium Pass</Link>
+              </li>
+            )}
+            {user && (
+              <li>
+                <Link to="/required">Required Reading</Link>
+              </li>
+            )}
+          </ul>
+        </div>
+
+        <div className="footer-col">
+          <h4 className="footer-heading">App & Support</h4>
+          <ul className="footer-links">
+            <li>
+              <Link to="/support">Support A-Read & M-Pesa</Link>
+            </li>
+            <li>
+              <button type="button" className="footer-link-button" onClick={onOpenInstall}>
+                <Download size={14} /> Download Android APK
+              </button>
+            </li>
+            <li>
+              <button type="button" className="footer-link-button" onClick={onOpenInstall}>
+                <Smartphone size={14} /> Install Web / Mobile App
+              </button>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <div className="footer-bottom">
+        <p className="muted small">© {new Date().getFullYear()} A-Read. All rights reserved.</p>
+      </div>
+    </footer>
+  );
+}
+
+function MobileNav({ onOpenInstall, user }) {
+  return (
+    <nav className="mobile-nav" aria-label="Mobile Navigation">
+      <NavLink to="/" end className={({ isActive }) => (isActive ? 'mobile-nav-item active' : 'mobile-nav-item')}>
+        <BookOpen size={20} />
+        <span>Library</span>
+      </NavLink>
+      <NavLink to="/authors" className={({ isActive }) => (isActive ? 'mobile-nav-item active' : 'mobile-nav-item')}>
+        <Feather size={20} />
+        <span>Authors</span>
+      </NavLink>
+      <button type="button" className="mobile-nav-item" onClick={onOpenInstall}>
+        <Download size={20} />
+        <span>Get App</span>
+      </button>
+      <NavLink to="/support" className={({ isActive }) => (isActive ? 'mobile-nav-item active' : 'mobile-nav-item')}>
+        <Heart size={20} />
+        <span>Support</span>
+      </NavLink>
+      {user ? (
+        <NavLink to="/required" className={({ isActive }) => (isActive ? 'mobile-nav-item active' : 'mobile-nav-item')}>
+          <ListChecks size={20} />
+          <span>Required</span>
+        </NavLink>
+      ) : (
+        <NavLink to="/login" className={({ isActive }) => (isActive ? 'mobile-nav-item active' : 'mobile-nav-item')}>
+          <User size={20} />
+          <span>Account</span>
+        </NavLink>
+      )}
+    </nav>
+  );
+}
+
 export default function Layout() {
   const { user, logout } = useAuth();
   const location = useLocation();
   const { data: system } = useSystemConfig();
+  const [installModalOpen, setInstallModalOpen] = useState(false);
   const canUpload = system?.uploads !== 'admins' || isAdmin(user);
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -131,6 +232,12 @@ export default function Layout() {
       <main className="page">
         <Outlet />
       </main>
+
+      <Footer onOpenInstall={() => setInstallModalOpen(true)} system={system} user={user} />
+      <MobileNav onOpenInstall={() => setInstallModalOpen(true)} user={user} system={system} />
+
+      <InstallModal open={installModalOpen} onClose={() => setInstallModalOpen(false)} />
+
       <UploadDock />
       <QuotePopup />
       <PromotionPopup />

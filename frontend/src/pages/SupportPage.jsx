@@ -94,6 +94,25 @@ export default function SupportPage() {
       )}
 
       {config?.number && <ManualPayment config={config} />}
+
+      <section className="panel" style={{ marginTop: '24px' }}>
+        <h2 className="panel-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Smartphone size={18} aria-hidden="true" /> Android App Download & Installation Guide
+        </h2>
+        <p className="muted small">Download the official A-Read Android app directly to your phone.</p>
+        <div style={{ margin: '12px 0' }}>
+          <a href="/A-read.apk" download="A-read.apk" className="button button-primary">
+            Download A-read.apk
+          </a>
+        </div>
+        <h3 style={{ fontSize: '15px', marginTop: '16px', marginBottom: '8px' }}>How to install on Android:</h3>
+        <ol className="manual-steps">
+          <li>Tap <strong>Download A-read.apk</strong> above.</li>
+          <li>When finished downloading, tap <strong>A-read.apk</strong> in your notification bar or Downloads folder.</li>
+          <li>If Android prompts <em>"For your security, your phone is not allowed to install unknown apps from this source"</em>, tap <strong>Settings</strong> and turn ON <strong>"Allow from this source"</strong>.</li>
+          <li>Return to the installer and tap <strong>Install</strong>. Once done, open A-Read!</li>
+        </ol>
+      </section>
     </div>
   );
 }

@@ -79,7 +79,13 @@ function handleDefault(event, request, url) {
   const isFont = /fonts\.(googleapis|gstatic)\.com$/.test(url.hostname);
   // API, Cloudinary files, Google sign-in: straight to the network.
   if ((!sameOrigin && !isFont) || (sameOrigin && (url.pathname.startsWith('/api/') || /\.(xml|txt)$/.test(url.pathname)))) {
-    return fetch(request);
+    return fetch(request).catch((err) => {
+      console.warn('SW fetch failed for:', request.url, err);
+      return new Response(JSON.stringify({ error: 'Network request failed' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
   }
 
   // Pages: network first, falling back to the cached app shell when offline.

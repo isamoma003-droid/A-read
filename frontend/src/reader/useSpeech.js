@@ -9,10 +9,21 @@ export function useBrowserVoices() {
   const [voices, setVoices] = useState(() => synth?.getVoices() ?? []);
   useEffect(() => {
     if (!synth) return undefined;
-    const update = () => setVoices(synth.getVoices());
+    const update = () => {
+      const v = synth.getVoices();
+      if (v.length > 0) setVoices(v);
+    };
     update();
     synth.addEventListener('voiceschanged', update);
-    return () => synth.removeEventListener('voiceschanged', update);
+    // On Android WebView or Chrome, voices load asynchronously
+    const timer = setInterval(update, 500);
+    const timeout = setTimeout(() => clearInterval(timer), 3000);
+
+    return () => {
+      synth.removeEventListener('voiceschanged', update);
+      clearInterval(timer);
+      clearTimeout(timeout);
+    };
   }, []);
   return voices;
 }
@@ -20,19 +31,20 @@ export function useBrowserVoices() {
 // The saved voice if it exists, otherwise the best-sounding voice for the book's language.
 // Offline, only voices installed on the device (localService) can speak.
 export function pickVoice(voices, voiceURI, language, { offline = false } = {}) {
-  const usable = offline ? voices.filter((v) => v.localService) : voices;
+  let usable = offline ? voices.filter((v) => v.localService) : voices;
+  if (!usable || usable.length === 0) usable = voices;
   if (voiceURI) {
     const saved = usable.find((v) => v.voiceURI === voiceURI);
     if (saved) return saved;
   }
-  voices = usable;
-  const lang = (language || navigator.language || 'en').slice(0, 2).toLowerCase();
-  const matches = voices.filter((v) => v.lang?.toLowerCase().startsWith(lang));
+  const lang = (language || (typeof navigator !== 'undefined' ? navigator.language : 'en') || 'en').slice(0, 2).toLowerCase();
+  const matches = usable.filter((v) => v.lang?.toLowerCase().startsWith(lang));
   return (
     matches.find((v) => /natural|neural|online|enhanced|premium/i.test(v.name)) ||
     matches.find((v) => v.default) ||
     matches[0] ||
-    voices.find((v) => v.default) ||
+    usable.find((v) => v.default) ||
+    usable[0] ||
     null
   );
 }
@@ -49,7 +61,13 @@ export function useSpeechPlayer({ sentences, rate, voice, onSentence, onEnd }) {
   const stop = useCallback(() => {
     run.current++;
     current.current = null;
-    synth?.cancel();
+    if (synth) {
+      try {
+        synth.cancel();
+      } catch {
+        // ignore
+      }
+    }
     setPlaying(false);
   }, []);
 
@@ -57,7 +75,12 @@ export function useSpeechPlayer({ sentences, rate, voice, onSentence, onEnd }) {
     if (!synth) return;
     const id = ++run.current;
     let failures = 0;
-    synth.cancel();
+    try {
+      if (synth.paused) synth.resume();
+      synth.cancel();
+    } catch {
+      // ignore
+    }
     setError(null);
     setPlaying(true);
 
@@ -71,11 +94,16 @@ export function useSpeechPlayer({ sentences, rate, voice, onSentence, onEnd }) {
         return;
       }
       report?.(i);
-      const utterance = new SpeechSynthesisUtterance(list[i]);
+      const text = list[i];
+      if (!text || !text.trim()) {
+        speak(i + 1);
+        return;
+      }
+      const utterance = new SpeechSynthesisUtterance(text);
       if (chosen) {
         utterance.voice = chosen;
-        utterance.lang = chosen.lang;
       }
+      utterance.lang = chosen?.lang || (typeof navigator !== 'undefined' ? navigator.language : 'en-US') || 'en-US';
       utterance.rate = speed;
       utterance.onend = () => {
         failures = 0;
@@ -90,7 +118,7 @@ export function useSpeechPlayer({ sentences, rate, voice, onSentence, onEnd }) {
           setPlaying(false);
           setError(
             event.error === 'not-allowed'
-              ? 'Your browser blocked speech. Press play to start.'
+              ? 'Your browser or device blocked speech. Tap play again or check system text-to-speech settings.'
               : `Your device voice stopped working (${event.error}). Try another voice in reading settings.`,
           );
           return;
@@ -98,11 +126,16 @@ export function useSpeechPlayer({ sentences, rate, voice, onSentence, onEnd }) {
         speak(i + 1);
       };
       current.current = utterance;
-      synth.speak(utterance);
+      try {
+        if (synth.paused) synth.resume();
+        synth.speak(utterance);
+      } catch (e) {
+        console.warn('SpeechSynthesis error:', e);
+      }
     };
 
-    // Chrome sometimes drops a speak() issued in the same tick as cancel().
-    setTimeout(() => speak(start), 60);
+    // On Chrome/Android, issue speak in current or next microtask
+    speak(start);
   }, [latest]);
 
   // Chrome's network voices stall after ~15 s of continuous speech unless nudged.
@@ -119,10 +152,18 @@ export function useSpeechPlayer({ sentences, rate, voice, onSentence, onEnd }) {
 
   useEffect(() => {
     const runs = run;
-    synth?.cancel(); // clear speech left over from a previous page
+    try {
+      synth?.cancel(); // clear speech left over from a previous page
+    } catch {
+      // ignore
+    }
     return () => {
       runs.current++;
-      synth?.cancel();
+      try {
+        synth?.cancel();
+      } catch {
+        // ignore
+      }
     };
   }, []);
 

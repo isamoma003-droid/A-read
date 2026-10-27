@@ -1,6 +1,12 @@
-export const API_URL = new URL((import.meta.env.VITE_API_URL || '/api').replace(/\/$/, ''), window.location.origin).href;
-const TOKEN_KEY = 'a-read-token';
+// Safely check if VITE_API_URL is provided, otherwise fallback
+const rawApiUrl = import.meta.env.VITE_API_URL || 'https://a-read.onrender.com/api';
 
+// If it's an absolute URL, use it directly. If it's relative, append to window.location.origin
+export const API_URL = rawApiUrl.startsWith('http') 
+  ? rawApiUrl.replace(/\/$/, '') 
+  : new URL(rawApiUrl.replace(/\/$/, ''), window.location.origin).href;
+
+const TOKEN_KEY = 'a-read-token';
 
 export class ApiError extends Error {
   constructor(status, message, details) {

@@ -1,0 +1,19 @@
+{
+  "appId": "com.aread.app",
+  "appName": "A-read",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https",
+    "allowNavigation": [
+      "a-read.onrender.com"
+    ]
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    },
+    "CapacitorUpdater": {
+      "autoUpdate": false
+    }
+  }
+}

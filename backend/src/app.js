@@ -28,7 +28,27 @@ export function createApp() {
   const app = express();
   app.set('trust proxy', 1);
   app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }));
-  app.use(cors({ origin: env.clientOrigins }));
+
+  const allowedOrigins = new Set([
+    ...env.clientOrigins,
+    'https://localhost',
+    'http://localhost',
+    'capacitor://localhost',
+  ]);
+
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        if (!origin || allowedOrigins.has(origin) || allowedOrigins.has('*')) {
+          callback(null, true);
+        } else {
+          callback(null, origin);
+        }
+      },
+      credentials: true,
+    }),
+  );
+
   app.use(
     express.json({
       limit: '1mb',
