@@ -18,6 +18,7 @@ import AdminPremium from './AdminPremium.jsx';
 import AdminPromotions from './AdminPromotions.jsx';
 import AdminQuotes from './AdminQuotes.jsx';
 import AdminSystem from './AdminSystem.jsx';
+import AdminNotifications from './AdminNotifications.jsx';
 
 const TABS = [
   ['overview', 'Overview'],
@@ -28,6 +29,7 @@ const TABS = [
   ['premium', 'Premium'],
   ['quotes', 'Quotes'],
   ['promotions', 'Popups'],
+  ['notifications', 'Notifications'],
   ['payments', 'Payments'],
   // Super admins only.
   ['system', 'System'],
@@ -65,6 +67,7 @@ export default function AdminPage() {
       {tab === 'categories' && <AdminCategories />}
       {tab === 'premium' && <AdminPremium />}
       {tab === 'promotions' && <AdminPromotions />}
+      {tab === 'notifications' && <AdminNotifications />}
       {tab === 'payments' && <AdminPayments />}
       {tab === 'quotes' && <AdminQuotes />}
       {tab === 'system' && <AdminSystem />}

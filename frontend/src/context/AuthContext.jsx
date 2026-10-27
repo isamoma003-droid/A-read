@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { Capacitor } from '@capacitor/core';
+import { PushNotifications } from '@capacitor/push-notifications';
 import { api, onUnauthorized, tokenStore } from '../api/client.js';
 import { clearOfflineBooks } from '../offline/store.js';
 import { clearUploads, restoreUploads } from '../uploads/store.js';
@@ -7,6 +9,7 @@ import { clearUploads, restoreUploads } from '../uploads/store.js';
 const AuthContext = createContext(null);
 const USER_KEY = 'a-read-user';
 const OFFLINE_OWNER_KEY = 'a-read-offline-owner';
+const DEVICE_TOKEN_KEY = 'a-read-push-token';
 
 // Books kept offline belong to one account. When a different account signs in on this device,
 // they're forgotten: they can include the previous reader's paid chapters and private file links.
@@ -91,7 +94,32 @@ export function AuthProvider({ children }) {
       verifyEmail: (token) => api('/auth/verify-email', { method: 'POST', body: { token } }).then(startSession),
       // Explicit log out also forgets the books kept for offline reading on this device, and
       // stops and forgets any uploads.
-      logout: () => {
+      logout: async () => {
+        if (Capacitor.isNativePlatform()) {
+          let pushToken = '';
+          try {
+            pushToken = localStorage.getItem(DEVICE_TOKEN_KEY) || '';
+          } catch (error) {
+            console.error('Could not read the push token during logout:', error);
+          }
+          if (pushToken) {
+            try {
+              await api('/notifications/devices', { method: 'DELETE', body: { token: pushToken } });
+            } catch (error) {
+              console.error('Could not remove the push token from the account during logout:', error);
+            }
+          }
+          try {
+            await PushNotifications.unregister();
+          } catch (error) {
+            console.error('Could not unregister this device from push notifications:', error);
+          }
+          try {
+            localStorage.removeItem(DEVICE_TOKEN_KEY);
+          } catch (error) {
+            console.error('Could not clear the push token during logout:', error);
+          }
+        }
         clearOfflineBooks();
         clearUploads();
         logout();

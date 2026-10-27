@@ -13,7 +13,19 @@
       "enabled": true
     },
     "CapacitorUpdater": {
-      "autoUpdate": false
+      "autoUpdate": "always",
+      "appId": "com.aread.app",
+      "keepUrlPathAfterReload": true,
+      "version": "0.0.0",
+      "defaultChannel": "production",
+      "autoSplashscreen": true
+    },
+    "PushNotifications": {
+      "presentationOptions": [
+        "badge",
+        "sound",
+        "alert"
+      ]
     },
     "SocialLogin": {
       "providers": {
@@ -22,6 +34,9 @@
         "apple": false,
         "twitter": false
       }
+    },
+    "SplashScreen": {
+      "launchAutoHide": false
     }
   }
 }

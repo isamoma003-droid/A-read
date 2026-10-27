@@ -85,7 +85,7 @@ export default function GoogleButton({ onCredential, text = 'continue_with' }) {
     try {
       const { result } = await SocialLogin.login({
         provider: 'google',
-        options: { scopes: ['email', 'profile'] },
+        options: {},
       });
       if (!result.idToken) throw new Error('Google sign-in did not return an ID token.');
       await latest.current(result.idToken);

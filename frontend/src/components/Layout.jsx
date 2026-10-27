@@ -9,6 +9,8 @@ import InstallButton, { InstallModal } from './InstallButton.jsx';
 import OfflineBanner from './OfflineBanner.jsx';
 import PromotionPopup from './PromotionPopup.jsx';
 import QuotePopup from './QuotePopup.jsx';
+import AppUpdateButton from './AppUpdateButton.jsx';
+import NotificationCenter from './NotificationCenter.jsx';
 import UploadDock from './UploadDock.jsx';
 
 const THEME_ORDER = ['light', 'sepia', 'dark'];
@@ -203,6 +205,8 @@ export default function Layout() {
                   </NavLink>
                 )}
                 <InstallButton />
+                <AppUpdateButton />
+                <NotificationCenter />
                 <ThemeToggle />
                 <span className="user-chip" title={`${user.name} · ${user.email}`}>
                   {user.name.slice(0, 1).toUpperCase()}
@@ -215,6 +219,7 @@ export default function Layout() {
             ) : (
               <>
                 <InstallButton />
+                <AppUpdateButton />
                 <ThemeToggle />
                 <Link to="/login" state={{ from: location.pathname }} className="button button-ghost button-small">
                   Log in

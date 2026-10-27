@@ -33,9 +33,22 @@ A shared book library where people upload books and then **read them on screen o
 - **Accounts**: email sign-up with a confirmation link (sent through Brevo), or **Sign in with Google**.
 - **Public catalogue + SEO**: anyone, including search engines, can browse the library, book pages and author pages. `/sitemap.xml` lists every book, every author and every category shelf, with the date each last changed, so a new author's page is picked up as soon as their first book is uploaded. Book and author pages carry structured data (schema.org `Book` with author, cover, price and star rating; `ProfilePage`/`Person` for authors) and a canonical address. Reading and listening need an account.
 - **Installable app (PWA)**: add it to the home screen on Android, iOS and desktop.
+- **Notifications**: admins can publish announcements in **Admin → Notifications**. Signed-in readers see an in-app inbox; Android users can opt in to device push notifications from the bell menu.
+- **Android app updates**: the **Update** button checks and installs Capgo live bundles without reinstalling. This updates web content only; changes to native Android code still require installing a new APK.
 - **Offline reading and listening**: books a reader opens are kept inside the app automatically (no download button, no files on the device the reader can access). The 10 most recently opened books can be read and listened to (narration, plus an audiobook once it has been played) with no connection, and progress syncs when the reader is back online. Original PDF/EPUB files up to 30 MB are kept for the page view. The device's own voice works offline only if a voice is installed locally.
 
 Only the person who uploaded a book (or an admin) can edit it, delete it, or add audio.
+
+### Push notifications and Android live updates
+
+In-app notifications work as soon as the API is deployed. To enable Android push notifications:
+
+1. Create a Firebase project and register an Android app with package name `com.aread.app`.
+2. Download its `google-services.json` into `frontend/android/app/` (the file is intentionally ignored by Git), then run `npx cap sync android`.
+3. Create a Firebase service account with permission to send Firebase Cloud Messaging messages. Set its JSON as the `FIREBASE_SERVICE_ACCOUNT_JSON` environment variable on the backend; keep it private and out of source control.
+4. Build and distribute a new APK. Users must opt in to push from the in-app bell menu.
+
+For Capgo live updates, configure the app and channel in Capgo, then publish compatible web bundles to that channel. The native **Update** button checks that channel and applies a bundle. Live bundles cannot change native plugins, permissions, or other APK code; those changes still require a new APK installation.
 
 ## Tech stack
 

@@ -9,6 +9,7 @@ import { Book } from '../models/Book.js';
 import { Bookmark } from '../models/Bookmark.js';
 import { Payment } from '../models/Payment.js';
 import { Progress } from '../models/Progress.js';
+import { NotificationRead, PushToken } from '../models/Notification.js';
 import { Review } from '../models/Review.js';
 import { ROLES, User, isSuperAdmin } from '../models/User.js';
 import { deleteBook } from '../services/books.js';
@@ -97,6 +98,8 @@ router.delete('/users/:id', async (req, res) => {
   await Promise.all([
     Progress.deleteMany({ user: user._id }),
     Bookmark.deleteMany({ user: user._id }),
+    NotificationRead.deleteMany({ user: user._id }),
+    PushToken.deleteMany({ user: user._id }),
     Review.deleteMany({ user: user._id }),
     Assignment.updateMany({ users: user._id }, { $pull: { users: user._id } }),
   ]);

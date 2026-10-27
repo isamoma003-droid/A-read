@@ -15,6 +15,7 @@ import bookmarkRoutes from './routes/bookmarks.js';
 import bookRoutes from './routes/books.js';
 import categoryRoutes from './routes/categories.js';
 import paymentRoutes from './routes/payments.js';
+import notificationRoutes from './routes/notifications.js';
 import progressRoutes from './routes/progress.js';
 import promotionRoutes from './routes/promotions.js';
 import quoteRoutes from './routes/quotes.js';
@@ -72,6 +73,7 @@ export function createApp() {
   app.use('/api/admin', adminRoutes);
   app.use('/api/assignments', assignmentRoutes);
   app.use('/api/payments', paymentRoutes);
+  app.use('/api/notifications', notificationRoutes);
   app.use('/api/promotions', promotionRoutes);
   app.use('/api/quotes', quoteRoutes);
   app.use('/api/system', systemRoutes);

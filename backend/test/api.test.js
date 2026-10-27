@@ -7,6 +7,7 @@ process.env.SUPER_ADMIN_EMAILS = 'sam@example.com,sue@example.com';
 process.env.CLOUDINARY_MAX_FILE_MB = '0.004'; // ~4 KB parts so the chunking path is exercised
 process.env.FRONTEND_URL = 'https://a-read.example';
 process.env.GOOGLE_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
+process.env.FIREBASE_SERVICE_ACCOUNT_JSON = '';
 process.env.INDEXNOW_KEY = 'test-indexnow-key-123';
 Object.assign(process.env, {
   MPESA_CONSUMER_KEY: 'key',
@@ -313,6 +314,98 @@ describe('API', { skip: !uri && 'set MONGODB_URI_TEST to run API tests' }, () =>
     const res = await api(`/admin/users/${bobUser.id}`, { token: alice, method: 'PATCH', body: { role: 'admin' } });
     assert.equal(res.status, 403);
     assert.match(res.body.error, /super admin/);
+  });
+
+  test('admins can publish in-app and push notifications to readers', async () => {
+    assert.equal((await api('/notifications')).status, 401);
+    assert.equal((await api('/notifications/admin', { token: bob })).status, 403);
+    assert.equal((await api('/notifications/admin', {
+      token: alice,
+      method: 'POST',
+      body: { title: 'Bad link', body: 'Test', link: 'https://example.com' },
+    })).status, 400);
+
+    const token = 'fcm-test-device-token-123456789012345';
+    assert.equal((await api('/notifications/devices', {
+      token: alice,
+      method: 'POST',
+      body: { token, platform: 'android' },
+    })).status, 204);
+    const created = await api('/notifications/admin', {
+      token: alice,
+      method: 'POST',
+      body: { title: 'Library update', body: 'A new collection is ready.', link: '/authors' },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(created.body.notification.title, 'Library update');
+    assert.deepEqual(created.body.push, { configured: false, sent: 0, failed: 0 });
+
+    let inbox = await api('/notifications', { token: bob });
+    assert.equal(inbox.status, 200);
+    assert.equal(inbox.body.unreadCount, 1);
+    assert.equal(inbox.body.notifications[0].read, false);
+    assert.equal(inbox.body.notifications[0].link, '/authors');
+
+    assert.equal((await api(`/notifications/${created.body.notification.id}/read`, { token: bob, method: 'PATCH' })).status, 200);
+    inbox = await api('/notifications', { token: bob });
+    assert.equal(inbox.body.unreadCount, 0);
+    assert.equal(inbox.body.notifications[0].read, true);
+
+    const adminInbox = await api('/notifications/admin', { token: alice });
+    assert.equal(adminInbox.status, 200);
+    assert.equal(adminInbox.body.notifications.length, 1);
+    assert.equal(adminInbox.body.pushConfigured, false);
+    assert.equal(adminInbox.body.registeredDevices, 1);
+
+    assert.equal((await api('/notifications/devices', { token: alice, method: 'DELETE', body: { token } })).status, 204);
+    assert.equal((await api(`/notifications/admin/${created.body.notification.id}`, { token: alice, method: 'DELETE' })).status, 204);
+    assert.equal((await api('/notifications', { token: alice })).body.unreadCount, 0);
+  });
+
+  test('admins can publish in-app and push notifications to readers', async () => {
+    assert.equal((await api('/notifications')).status, 401);
+    assert.equal((await api('/notifications/admin', { token: bob })).status, 403);
+    assert.equal((await api('/notifications/admin', {
+      token: alice,
+      method: 'POST',
+      body: { title: 'Bad link', body: 'Test', link: 'https://example.com' },
+    })).status, 400);
+
+    const token = 'fcm-test-device-token-123456789012345';
+    assert.equal((await api('/notifications/devices', {
+      token: alice,
+      method: 'POST',
+      body: { token, platform: 'android' },
+    })).status, 204);
+    const created = await api('/notifications/admin', {
+      token: alice,
+      method: 'POST',
+      body: { title: 'Library update', body: 'A new collection is ready.', link: '/authors' },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(created.body.notification.title, 'Library update');
+    assert.deepEqual(created.body.push, { configured: false, sent: 0, failed: 0 });
+
+    let inbox = await api('/notifications', { token: bob });
+    assert.equal(inbox.status, 200);
+    assert.equal(inbox.body.unreadCount, 1);
+    assert.equal(inbox.body.notifications[0].read, false);
+    assert.equal(inbox.body.notifications[0].link, '/authors');
+
+    assert.equal((await api(`/notifications/${created.body.notification.id}/read`, { token: bob, method: 'PATCH' })).status, 200);
+    inbox = await api('/notifications', { token: bob });
+    assert.equal(inbox.body.unreadCount, 0);
+    assert.equal(inbox.body.notifications[0].read, true);
+
+    const adminInbox = await api('/notifications/admin', { token: alice });
+    assert.equal(adminInbox.status, 200);
+    assert.equal(adminInbox.body.notifications.length, 1);
+    assert.equal(adminInbox.body.pushConfigured, false);
+    assert.equal(adminInbox.body.registeredDevices, 1);
+
+    assert.equal((await api('/notifications/devices', { token: alice, method: 'DELETE', body: { token } })).status, 204);
+    assert.equal((await api(`/notifications/admin/${created.body.notification.id}`, { token: alice, method: 'DELETE' })).status, 204);
+    assert.equal((await api('/notifications', { token: alice })).body.unreadCount, 0);
   });
 
   test('guests can browse the catalogue but not read', async () => {
